@@ -158,10 +158,15 @@ class OpenAICompatProvider:
                     raise ProviderError(
                         f"{self.name}: ответ только URL, нужен httpx для скачивания"
                     ) from exc
-                async with httpx.AsyncClient(timeout=60.0) as http:
-                    r = await http.get(url)
-                    r.raise_for_status()
-                    images.append(GeneratedImage(data=r.content, revised_prompt=revised))
+                try:
+                    async with httpx.AsyncClient(timeout=60.0) as http:
+                        r = await http.get(url)
+                        r.raise_for_status()
+                        images.append(GeneratedImage(data=r.content, revised_prompt=revised))
+                except Exception as exc:  # noqa: BLE001
+                    raise ProviderError(
+                        f"{self.name}: не удалось скачать изображение по URL: {exc}"
+                    ) from exc
             else:
                 raise ProviderError(f"{self.name}: пустой image response без b64_json/url")
         if not images:
