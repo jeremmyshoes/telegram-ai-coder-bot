@@ -10,6 +10,11 @@ from typing import Any
 
 from bot.providers.base import ToolDefinition
 from bot.tools.sandbox import Sandbox
+from bot.tools.web_search import (
+    WebSearchError,
+    format_results,
+    google_search,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +63,13 @@ def _resolve_path(workdir: Path, raw_path: str) -> Path:
     return p
 
 
-def build_tool_registry(*, sandbox: Sandbox, sandbox_timeout: int) -> ToolRegistry:
+def build_tool_registry(
+    *,
+    sandbox: Sandbox,
+    sandbox_timeout: int,
+    google_search_api_key: str = "",
+    google_search_cse_id: str = "",
+) -> ToolRegistry:
     workdir = sandbox.workdir
     reg = ToolRegistry()
 
@@ -246,5 +257,53 @@ def build_tool_registry(*, sandbox: Sandbox, sandbox_timeout: int) -> ToolRegist
             handler=ls_handler,
         )
     )
+
+    # ----------------------------------------------------------- web_search
+    if google_search_api_key and google_search_cse_id:
+
+        async def web_search_handler(args: dict[str, Any]) -> str:
+            query = (args.get("query") or "").strip()
+            num = int(args.get("num_results") or 5)
+            try:
+                results = await google_search(
+                    query,
+                    api_key=google_search_api_key,
+                    cse_id=google_search_cse_id,
+                    num_results=num,
+                )
+            except WebSearchError as exc:
+                return f"[error] web_search: {exc}"
+            return format_results(results)
+
+        reg.register(
+            ToolHandler(
+                definition=ToolDefinition(
+                    name="web_search",
+                    description=(
+                        "Ищет в Google через Custom Search JSON API. "
+                        "Используй когда нужна свежая информация (события после "
+                        "knowledge cutoff модели), факты, проверка цифр, "
+                        "ссылки на источники. Возвращает топ-результатов с "
+                        "title, link и snippet."
+                    ),
+                    parameters={
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "Поисковый запрос (как в google.com)",
+                            },
+                            "num_results": {
+                                "type": "integer",
+                                "description": "Сколько результатов (1..10)",
+                                "default": 5,
+                            },
+                        },
+                        "required": ["query"],
+                    },
+                ),
+                handler=web_search_handler,
+            )
+        )
 
     return reg

@@ -37,6 +37,13 @@ from bot.handlers.keyboards import (
 )
 from bot.providers import PROVIDER_PRESETS, ImageData, Message, ProviderError
 from bot.providers.openai_compat import OpenAICompatProvider
+from bot.tools.web_search import (
+    WebSearchError,
+    google_search,
+)
+from bot.tools.web_search import (
+    format_results as format_search_results,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +53,7 @@ HELP_TEXT = """\
 
 <b>Быстрые команды</b>
 /chat &lt;запрос&gt; — one-shot ответ от текущей модели (без истории, без инструментов)
+/search &lt;запрос&gt; — Google web-поиск (нужны GOOGLE_SEARCH_API_KEY/CSE_ID)
 /img &lt;промпт&gt; — сгенерировать картинку (OpenAI / AceData / любой OpenAI-compat)
    • размер: <code>/img -s 1792x1024 закат над морем</code>
    • качество (dall-e-3): <code>/img -q hd кот в очках</code>
@@ -422,6 +430,47 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
 
         text = (response.content or "").strip() or "(пустой ответ)"
         await send_long(message, text)
+
+    @dp.message(Command("search"))
+    async def cmd_search(message: TgMessage, command: CommandObject) -> None:
+        if not is_allowed(ctx.settings, message.from_user.id if message.from_user else None):
+            return
+        query = (command.args or "").strip()
+        if not query:
+            await message.answer(
+                "Использование: <code>/search ваш запрос</code>\n"
+                "Ищет через Google Custom Search API.",
+                parse_mode="HTML",
+            )
+            return
+        if not (
+            ctx.settings.google_search_api_key and ctx.settings.google_search_cse_id
+        ):
+            await message.answer(
+                "Web-поиск не настроен.\n"
+                "Добавьте в <code>.env</code>:\n"
+                "<code>GOOGLE_SEARCH_API_KEY=…</code>\n"
+                "<code>GOOGLE_SEARCH_CSE_ID=…</code>\n"
+                "и перезапустите бота. Подробнее: https://developers.google.com/custom-search/v1/overview",
+                parse_mode="HTML",
+            )
+            return
+        thinking = await message.answer("🔎 Ищу…")
+        try:
+            results = await google_search(
+                query,
+                api_key=ctx.settings.google_search_api_key,
+                cse_id=ctx.settings.google_search_cse_id,
+                num_results=5,
+            )
+        except WebSearchError as exc:
+            with suppress(Exception):
+                await thinking.delete()
+            await message.answer(f"⚠ Ошибка поиска: {html.escape(str(exc))}", parse_mode="HTML")
+            return
+        with suppress(Exception):
+            await thinking.delete()
+        await send_long(message, format_search_results(results))
 
     @dp.message(Command("img"))
     async def cmd_img(message: TgMessage, command: CommandObject) -> None:

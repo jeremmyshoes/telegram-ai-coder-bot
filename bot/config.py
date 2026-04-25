@@ -40,6 +40,15 @@ class Settings(BaseSettings):
         description="Размер по умолчанию для /img (например 1024x1024, 1024x1792, 1792x1024)",
     )
 
+    google_search_api_key: str = Field(
+        default="",
+        description="API key из Google Cloud Console (для Custom Search JSON API).",
+    )
+    google_search_cse_id: str = Field(
+        default="",
+        description="ID поискового движка из programmablesearchengine.google.com.",
+    )
+
     log_level: str = "INFO"
 
     @property

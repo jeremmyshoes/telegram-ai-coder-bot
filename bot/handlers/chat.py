@@ -43,6 +43,8 @@ def register_chat_handlers(dp: Dispatcher, ctx: AppContext) -> None:
             tools = build_tool_registry(
                 sandbox=sandbox,
                 sandbox_timeout=ctx.settings.sandbox_timeout,
+                google_search_api_key=ctx.settings.google_search_api_key,
+                google_search_cse_id=ctx.settings.google_search_cse_id,
             )
         else:
             tools = None
