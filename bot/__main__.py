@@ -20,6 +20,7 @@ from bot.handlers import (
     register_file_handlers,
 )
 from bot.handlers.common import AppContext
+from bot.handlers.keyboards import BOT_COMMANDS
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,11 @@ async def main() -> None:
     try:
         me = await bot.get_me()
         logger.info("Бот @%s готов к работе", me.username)
+        # Регистрируем команды в меню Telegram (отображается при клике "/")
+        try:
+            await bot.set_my_commands(BOT_COMMANDS)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Не удалось зарегистрировать команды в меню: %s", exc)
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
         await db.close()
