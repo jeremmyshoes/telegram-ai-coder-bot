@@ -8,6 +8,7 @@ from contextlib import suppress
 
 from aiogram import Dispatcher, F
 from aiogram.filters import Command, CommandObject
+from aiogram.types import BufferedInputFile
 from aiogram.types import Message as TgMessage
 
 from bot.handlers.common import (
@@ -16,15 +17,22 @@ from bot.handlers.common import (
     provider_titles,
     send_long,
 )
-from bot.providers import PROVIDER_PRESETS
+from bot.providers import PROVIDER_PRESETS, Message, ProviderError
+from bot.providers.openai_compat import OpenAICompatProvider
 
 logger = logging.getLogger(__name__)
 
 
 HELP_TEXT = """\
-<b>Telegram AI Coder Bot</b> — аналог opencode/Cursor в Telegram.
+<b>Telegram AI Coder Bot</b> — мульти-провайдерный AI-бот: текст и картинки.
 
-<b>Базовые команды</b>
+<b>Быстрые команды</b>
+/chat &lt;запрос&gt; — one-shot ответ от текущей модели (без истории, без инструментов)
+/img &lt;промпт&gt; — сгенерировать картинку через OpenAI Images API
+   • размер: <code>/img -s 1792x1024 закат над морем</code>
+   • качество (dall-e-3): <code>/img -q hd кот в очках</code>
+
+<b>Настройка</b>
 /start — приветствие
 /help — эта справка
 /providers — список встроенных провайдеров
@@ -32,9 +40,9 @@ HELP_TEXT = """\
 /setkey &lt;provider&gt; &lt;api_key&gt; [base_url] — сохранить API-ключ (шифруется на диске)
 /keys — показать какие ключи сохранены (без значений)
 /delkey &lt;provider&gt; — удалить ключ
-/model &lt;model_id&gt; — задать модель (напр. <code>gpt-4o</code>, <code>claude-sonnet-4-5-20250929</code>, <code>anthropic/claude-3.5-sonnet</code>)
+/model &lt;model_id&gt; — задать модель (напр. <code>gpt-4o</code>, <code>claude-sonnet-4-5-20250929</code>)
 /models — показать рекомендованные модели для текущего провайдера
-/mode agent|chat — режим (agent с инструментами / обычный chat)
+/mode agent|chat — режим обычной переписки (agent с инструментами / chat — без)
 /status — текущие настройки
 /reset — очистить историю разговора
 /workdir — показать содержимое рабочей папки
@@ -43,9 +51,39 @@ HELP_TEXT = """\
 <b>Использование</b>
 1. Установите ключ: <code>/setkey openai sk-...</code>
 2. Выберите провайдера и модель: <code>/provider openai</code>, <code>/model gpt-4o</code>
-3. Просто пишите сообщения — в режиме <b>agent</b> модель сама запустит bash/прочитает файлы и т.д.
-4. Можно прислать файл — он попадёт в рабочую папку.
+3. Быстрый чат: <code>/chat объясни SOLID за 3 предложения</code>
+4. Картинка: <code>/img киберпанк Москва ночью</code>
+5. Длинный диалог / coder-режим: просто пишите сообщения — в режиме <b>agent</b>
+   модель сама вызовет bash/file-tools (как opencode/Cursor).
+6. Можно прислать файл — он попадёт в рабочую папку.
 """
+
+
+# Размеры, которые принимает OpenAI Images API
+_DALLE3_SIZES = {"1024x1024", "1024x1792", "1792x1024"}
+_DALLE2_SIZES = {"256x256", "512x512", "1024x1024"}
+_GPT_IMAGE_SIZES = {"1024x1024", "1024x1536", "1536x1024", "auto"}
+
+
+def _parse_img_args(args: str) -> tuple[str, dict[str, str]]:
+    """Простой парсер: вытаскивает -s WxH и -q quality, остальное — промпт."""
+    flags: dict[str, str] = {}
+    tokens = args.split()
+    prompt_parts: list[str] = []
+    i = 0
+    while i < len(tokens):
+        t = tokens[i]
+        if t in ("-s", "--size") and i + 1 < len(tokens):
+            flags["size"] = tokens[i + 1]
+            i += 2
+            continue
+        if t in ("-q", "--quality") and i + 1 < len(tokens):
+            flags["quality"] = tokens[i + 1]
+            i += 2
+            continue
+        prompt_parts.append(t)
+        i += 1
+    return " ".join(prompt_parts).strip(), flags
 
 
 def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
@@ -263,6 +301,156 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
                 with suppress(OSError):
                     entry.unlink()
         await message.answer("Рабочая папка очищена.")
+
+    @dp.message(Command("chat"))
+    async def cmd_chat(message: TgMessage, command: CommandObject) -> None:
+        if not is_allowed(ctx.settings, message.from_user.id if message.from_user else None):
+            return
+        prompt = (command.args or "").strip()
+        if not prompt:
+            await message.answer(
+                "Использование: <code>/chat ваш вопрос</code>",
+                parse_mode="HTML",
+            )
+            return
+        assert message.from_user
+        provider_data = await ctx.get_provider_for(message.from_user.id)
+        if provider_data is None:
+            await message.answer(
+                "Сначала настройте провайдер/модель/ключ. /help",
+            )
+            return
+        provider, model = provider_data
+
+        thinking = await message.answer("⏳ Думаю…")
+        try:
+            response = await provider.complete(
+                messages=[Message(role="user", content=prompt)],
+                model=model,
+            )
+        except ProviderError as exc:
+            with suppress(Exception):
+                await thinking.delete()
+            await message.answer(f"⚠ Ошибка провайдера: {exc}")
+            return
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("/chat failed")
+            with suppress(Exception):
+                await thinking.delete()
+            await message.answer(f"⚠ Ошибка: {exc}")
+            return
+
+        with suppress(Exception):
+            await thinking.delete()
+
+        text = (response.content or "").strip() or "(пустой ответ)"
+        await send_long(message, text)
+
+    @dp.message(Command("img"))
+    async def cmd_img(message: TgMessage, command: CommandObject) -> None:
+        if not is_allowed(ctx.settings, message.from_user.id if message.from_user else None):
+            return
+        if not command.args:
+            await message.answer(
+                "Использование: <code>/img промпт</code> или "
+                "<code>/img -s 1792x1024 -q hd промпт</code>",
+                parse_mode="HTML",
+            )
+            return
+        prompt, flags = _parse_img_args(command.args)
+        if not prompt:
+            await message.answer("Промпт пуст после парсинга флагов.")
+            return
+
+        assert message.from_user
+        # Для /img нужен OpenAI-совместимый ключ. По умолчанию берём ключ от
+        # провайдера 'openai'. Если его нет — пробуем текущего провайдера
+        # пользователя, при условии что это OpenAI-compat (не anthropic).
+        key_row = await ctx.db.get_key(message.from_user.id, "openai")
+        used_provider = "openai"
+        if key_row is None:
+            user = await ctx.db.ensure_user(message.from_user.id)
+            if user.provider and user.provider != "anthropic":
+                key_row = await ctx.db.get_key(message.from_user.id, user.provider)
+                used_provider = user.provider
+        if key_row is None:
+            await message.answer(
+                "Нужен OpenAI ключ для генерации картинок: "
+                "<code>/setkey openai sk-...</code>",
+                parse_mode="HTML",
+            )
+            return
+
+        try:
+            api_key = ctx.vault.decrypt(key_row.encrypted)
+        except RuntimeError:
+            await message.answer("Не удалось расшифровать ключ. Переустановите /setkey.")
+            return
+
+        provider = OpenAICompatProvider(
+            name=used_provider,
+            api_key=api_key,
+            base_url=key_row.base_url,
+        )
+
+        model = ctx.settings.image_model
+        size = flags.get("size", ctx.settings.image_size)
+        quality = flags.get("quality")
+
+        # Лёгкая валидация
+        valid_sizes = (
+            _DALLE3_SIZES
+            if model.startswith("dall-e-3")
+            else _DALLE2_SIZES
+            if model.startswith("dall-e-2")
+            else _GPT_IMAGE_SIZES
+            if model.startswith("gpt-image")
+            else None
+        )
+        if valid_sizes and size not in valid_sizes:
+            await message.answer(
+                f"Размер <code>{size}</code> не поддержан для модели "
+                f"<code>{model}</code>. Допустимые: "
+                + ", ".join(sorted(valid_sizes)),
+                parse_mode="HTML",
+            )
+            return
+
+        progress = await message.answer(f"🎨 Генерирую картинку ({model}, {size})…")
+        try:
+            images = await provider.generate_image(
+                prompt=prompt,
+                model=model,
+                size=size,
+                quality=quality,
+            )
+        except ProviderError as exc:
+            with suppress(Exception):
+                await progress.delete()
+            await message.answer(f"⚠ Ошибка генерации: {exc}")
+            return
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("/img failed")
+            with suppress(Exception):
+                await progress.delete()
+            await message.answer(f"⚠ Ошибка: {exc}")
+            return
+
+        with suppress(Exception):
+            await progress.delete()
+
+        for idx, img in enumerate(images, start=1):
+            caption_parts = [f"<i>{prompt[:200]}</i>"]
+            if img.revised_prompt and img.revised_prompt.strip() != prompt.strip():
+                caption_parts.append(f"\n<b>Revised:</b> {img.revised_prompt[:600]}")
+            caption = "".join(caption_parts)[:1024]
+            photo = BufferedInputFile(img.data, filename=f"img_{idx}.png")
+            try:
+                await message.answer_photo(photo, caption=caption, parse_mode="HTML")
+            except Exception:  # noqa: BLE001
+                # если caption слишком длинный или с битым HTML — отдаём без caption
+                photo = BufferedInputFile(img.data, filename=f"img_{idx}.png")
+                await message.answer_photo(photo)
 
     # Заглушка — на случай неизвестных команд (только если начинается с /)
     @dp.message(F.text.startswith("/"))
