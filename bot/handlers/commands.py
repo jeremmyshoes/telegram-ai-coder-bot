@@ -457,6 +457,13 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
                 return
             key_row = await ctx.db.get_key(message.from_user.id, explicit_provider)
             used_provider = explicit_provider
+            if key_row is None:
+                await message.answer(
+                    f"Ключ для провайдера <code>{html.escape(explicit_provider)}</code> не найден.\n"
+                    f"Сохраните: <code>/setkey {html.escape(explicit_provider)} ваш-ключ</code>",
+                    parse_mode="HTML",
+                )
+                return
         if key_row is None:
             user = await ctx.db.ensure_user(message.from_user.id)
             if user.provider and user.provider != "anthropic":
