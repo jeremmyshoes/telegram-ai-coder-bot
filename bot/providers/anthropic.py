@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from typing import Any
 
 from anthropic import APIError, AsyncAnthropic
@@ -84,7 +85,24 @@ class AnthropicProvider:
                     anthro_msgs.append({"role": "assistant", "content": blocks})
                 continue
             # default: user
-            anthro_msgs.append({"role": "user", "content": m.content or ""})
+            if m.images:
+                blocks: list[dict[str, Any]] = []
+                for img in m.images:
+                    blocks.append(
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": img.mime,
+                                "data": base64.b64encode(img.data).decode("ascii"),
+                            },
+                        }
+                    )
+                if m.content:
+                    blocks.append({"type": "text", "text": m.content})
+                anthro_msgs.append({"role": "user", "content": blocks})
+            else:
+                anthro_msgs.append({"role": "user", "content": m.content or ""})
 
         kwargs: dict[str, Any] = {
             "model": model,

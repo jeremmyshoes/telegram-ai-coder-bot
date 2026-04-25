@@ -25,11 +25,18 @@ Docker, свой набор API-ключей и своя история.
 - **Whitelist пользователей** через `ALLOWED_USER_IDS`.
 - **Загрузка файлов**: пришлите документ — он окажется в рабочей папке и будет
   доступен агенту.
+- **UX-интерфейс**:
+  - Меню Telegram при нажатии `/` (через `set_my_commands`).
+  - Reply-клавиатура внизу: 💬 Чат, 🎨 Картинка, ⚙️ Настройки, 📊 Статус, ℹ️ Помощь.
+  - Inline-кнопки для выбора провайдера и модели — никаких ID руками.
+  - `/menu` — открыть главное меню, `/hidekb` — спрятать клавиатуру.
 
 ## Команды
 
 | Команда | Описание |
 |---|---|
+| `/chat <запрос>` | One-shot ответ от текущей модели (без истории, без tools) |
+| `/img <промпт>` | Сгенерировать картинку через OpenAI Images API |
 | `/start`, `/help` | Справка |
 | `/providers` | Список встроенных провайдеров |
 | `/provider <id>` | Выбрать провайдера (`openai`, `openrouter`, …) |
@@ -37,10 +44,53 @@ Docker, свой набор API-ключей и своя история.
 | `/keys` / `/delkey <provider>` | Просмотр / удаление ключей |
 | `/model <model_id>` | Задать модель |
 | `/models` | Подсказки + live-список моделей провайдера |
-| `/mode agent\|chat` | Переключить режим |
+| `/mode agent\|chat` | Режим длинного диалога (agent с tools / chat без) |
 | `/status` | Текущие настройки |
 | `/reset` | Очистить историю |
 | `/workdir`, `/clearwd` | Просмотр/очистка sandbox-папки |
+
+`/img` принимает флаги `-s WxH` (размер) и `-q hd|standard|low|medium|high|auto`
+(качество, для dall-e-3 / gpt-image-1). Примеры: `/img -s 1792x1024 закат`,
+`/img -q hd кот в очках`. Модель и дефолтный размер настраиваются через
+`IMAGE_MODEL` (по умолчанию `dall-e-3`) и `IMAGE_SIZE` в `.env`.
+
+## Где взять API-ключ (включая бесплатные варианты)
+
+**Бесплатно или с щедрым free-tier** (требуется ваша регистрация):
+
+| Провайдер | Бот-id | Бесплатно | Где получить |
+|---|---|---|---|
+| Cerebras (Llama 3.3-70b, Qwen, gpt-oss) — самый быстрый | `cerebras` | Free API из playground | https://cloud.cerebras.ai |
+| SambaNova Cloud (DeepSeek-R1, Llama-4) | `sambanova` | $5 стартовых + free-tier с rate-limit | https://cloud.sambanova.ai/apis |
+| HuggingFace Inference Router | `huggingface` | Free-tier на месяц | https://huggingface.co/settings/tokens |
+| Google Gemini (через AI Studio) | `google` | Бесплатный tier | https://aistudio.google.com/app/apikey |
+| Groq (Llama, Mixtral) | `groq` | Free-tier | https://console.groq.com/keys |
+| Mistral La Plateforme | `mistral` | Бесплатный tier | https://console.mistral.ai/api-keys/ |
+| OpenRouter (300+ моделей, есть `:free`) | `openrouter` | `:free` варианты бесплатны | https://openrouter.ai/keys |
+
+**Платные / агрегаторы**:
+
+| Провайдер | Бот-id | Где получить |
+|---|---|---|
+| OpenAI (GPT-4o, GPT-5, dall-e-3) | `openai` | https://platform.openai.com/api-keys |
+| Anthropic Claude | `anthropic` | https://console.anthropic.com/settings/keys |
+| DeepSeek | `deepseek` | https://platform.deepseek.com/api_keys |
+| xAI Grok | `xai` | https://console.x.ai |
+| Together AI | `together` | https://api.together.ai/settings/api-keys |
+| AceData Cloud (агрегатор GPT/Claude/Gemini) | `acedata` | https://platform.acedata.cloud |
+
+> **Важно:** ключи нужно регистрировать самому — это ваши учётные записи.
+> «Анонимных бесплатных» ключей не существует, а сайты, раздающие чужие
+> рабочие ключи (g4f-style прокси) — нелегальны и работают нестабильно;
+> в этот бот они не подключаются.
+
+После регистрации:
+```
+/setkey cerebras csk-...
+/provider cerebras
+/model llama-3.3-70b
+/chat Привет, как дела?
+```
 
 ## Быстрый старт (локально)
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -9,6 +10,18 @@ from typing import Any, Protocol
 
 class ProviderError(Exception):
     """Ошибка провайдера / API."""
+
+
+@dataclass
+class ImageData:
+    """Изображение, прикладываемое к user-сообщению (multimodal vision)."""
+
+    data: bytes
+    mime: str = "image/jpeg"
+
+    def to_data_url(self) -> str:
+        b64 = base64.b64encode(self.data).decode("ascii")
+        return f"data:{self.mime};base64,{b64}"
 
 
 @dataclass
@@ -39,13 +52,21 @@ class ToolCall:
 class Message:
     role: str  # 'system' | 'user' | 'assistant' | 'tool'
     content: str | None = None
+    images: list[ImageData] = field(default_factory=list)
     tool_calls: list[ToolCall] = field(default_factory=list)
     tool_call_id: str | None = None  # для role='tool'
     name: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {"role": self.role}
-        if self.content is not None:
+        if self.images and self.role == "user":
+            parts: list[dict[str, Any]] = []
+            if self.content:
+                parts.append({"type": "text", "text": self.content})
+            for img in self.images:
+                parts.append({"type": "image_url", "image_url": {"url": img.to_data_url()}})
+            out["content"] = parts
+        elif self.content is not None:
             out["content"] = self.content
         if self.tool_calls:
             out["tool_calls"] = [

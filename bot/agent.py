@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from bot.providers.base import LLMProvider, Message, ToolCall
+from bot.providers.base import ImageData, LLMProvider, Message, ToolCall
 from bot.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -76,20 +76,28 @@ class Agent:
         *,
         on_event: EventCallback | None = None,
         system_prompt: str | None = None,
+        images: list[ImageData] | None = None,
     ) -> AgentResult:
         sys_text = system_prompt or (SYSTEM_PROMPT_AGENT if self.tools else SYSTEM_PROMPT_CHAT)
 
+        user_msg = Message(role="user", content=user_message, images=list(images or []))
         messages: list[Message] = [Message(role="system", content=sys_text)]
         messages.extend(history)
-        messages.append(Message(role="user", content=user_message))
+        messages.append(user_msg)
 
+        # В историю сохраняем только текст (изображения через JSON не сериализуются)
         new_messages: list[Message] = [Message(role="user", content=user_message)]
         tool_defs = self.tools.definitions() if self.tools else None
 
         for iteration in range(1, self.max_iterations + 1):
             logger.debug("agent iteration %d / %d", iteration, self.max_iterations)
             if on_event:
-                await on_event(AgentEvent(kind="thinking", text=f"Итерация {iteration}…"))
+                # В chat-режиме (без инструментов) итерация всегда одна — нет смысла
+                # показывать «Итерация N…», это сбивает с толку.
+                if self.tools is None:
+                    await on_event(AgentEvent(kind="thinking", text="⏳ Думаю…"))
+                else:
+                    await on_event(AgentEvent(kind="thinking", text=f"Итерация {iteration}…"))
 
             response = await self.provider.complete(
                 messages=messages,
