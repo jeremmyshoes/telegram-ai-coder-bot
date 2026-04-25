@@ -1,6 +1,7 @@
 """LLM-провайдеры."""
 
 from bot.providers.base import (
+    ImageData,
     LLMProvider,
     LLMResponse,
     Message,
@@ -16,6 +17,7 @@ from bot.providers.registry import (
 )
 
 __all__ = [
+    "ImageData",
     "LLMProvider",
     "LLMResponse",
     "Message",

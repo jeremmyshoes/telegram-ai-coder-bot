@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import html
+import io
 import logging
 import shutil
 from contextlib import suppress
 
-from aiogram import Dispatcher, F
+from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command, CommandObject
 from aiogram.types import (
     BufferedInputFile,
@@ -34,7 +35,7 @@ from bot.handlers.keyboards import (
     providers_kb,
     settings_kb,
 )
-from bot.providers import PROVIDER_PRESETS, Message, ProviderError
+from bot.providers import PROVIDER_PRESETS, ImageData, Message, ProviderError
 from bot.providers.openai_compat import OpenAICompatProvider
 
 logger = logging.getLogger(__name__)
@@ -72,7 +73,20 @@ HELP_TEXT = """\
 4. Картинка: <code>/img киберпанк Москва ночью</code>
 5. Длинный диалог / coder-режим: просто пишите сообщения — в режиме <b>agent</b>
    модель сама вызовет bash/file-tools (как opencode/Cursor).
-6. Можно прислать файл — он попадёт в рабочую папку.
+
+<b>📷 Фото и файлы</b>
+• Пришлите <b>фото</b> с подписью (или без) — модель «увидит» изображение и ответит.
+• Пришлите <b>картинку как файл</b> (jpg/png/webp/gif) — то же самое.
+• Пришлите <b>текстовый файл</b> (.py/.md/.txt/.json/.log/…) — содержимое уйдёт в промпт,
+  caption = ваш вопрос (по умолчанию: «опиши что в нём»).
+• <b>Бинарные документы</b> просто сохраняются в рабочую папку — агент в режиме
+  <code>agent</code> прочтёт их через <code>read_file</code>.
+• Можно ответить на любое фото командой <code>/chat ваш вопрос</code> — модель
+  получит и фото, и текст.
+
+<i>Vision-capable модели</i>: gpt-4o, gpt-4o-mini, gpt-4.1, claude-3.5-sonnet,
+claude-sonnet-4-5, gemini-1.5-pro, llama-3.2-90b-vision и т.п. Через AceData
+рекомендуем <code>gpt-4o</code> или <code>gpt-4.1</code>.
 """
 
 
@@ -352,16 +366,30 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
         await message.answer("Рабочая папка очищена.")
 
     @dp.message(Command("chat"))
-    async def cmd_chat(message: TgMessage, command: CommandObject) -> None:
+    async def cmd_chat(message: TgMessage, command: CommandObject, bot: Bot) -> None:
         if not is_allowed(ctx.settings, message.from_user.id if message.from_user else None):
             return
         prompt = (command.args or "").strip()
+        # если /chat ответ на фото — берём его как vision-вход
+        images: list[ImageData] = []
+        reply = message.reply_to_message
+        if reply and reply.photo:
+            try:
+                buf = io.BytesIO()
+                await bot.download(reply.photo[-1], destination=buf)
+                images.append(ImageData(data=buf.getvalue(), mime="image/jpeg"))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("/chat reply photo download failed: %s", exc)
         if not prompt:
-            await message.answer(
-                "Использование: <code>/chat ваш вопрос</code>",
-                parse_mode="HTML",
-            )
-            return
+            if images:
+                prompt = "Опиши изображение."
+            else:
+                await message.answer(
+                    "Использование: <code>/chat ваш вопрос</code>\n"
+                    "Можно ответить на фото командой /chat — модель его «увидит».",
+                    parse_mode="HTML",
+                )
+                return
         assert message.from_user
         provider_data = await ctx.get_provider_for(message.from_user.id)
         if provider_data is None:
@@ -374,7 +402,7 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
         thinking = await message.answer("⏳ Думаю…")
         try:
             response = await provider.complete(
-                messages=[Message(role="user", content=prompt)],
+                messages=[Message(role="user", content=prompt, images=images)],
                 model=model,
             )
         except ProviderError as exc:
