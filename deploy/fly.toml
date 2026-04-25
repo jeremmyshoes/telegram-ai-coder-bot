@@ -1,0 +1,22 @@
+# Пример конфига для fly.io. Замените app, region.
+# Учтите: на fly.io нет доступа к docker daemon — sandbox упадёт в SubprocessSandbox.
+# Если нужна изоляция — используйте VPS или Docker-host с привилегиями.
+
+app = "telegram-ai-coder-bot"
+primary_region = "fra"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  DATA_DIR = "/data"
+  DB_PATH = "/data/bot.db"
+  WORKSPACES_DIR = "/data/workspaces"
+  DISABLE_DOCKER_SANDBOX = "1"
+
+[mounts]
+  source = "bot_data"
+  destination = "/data"
+
+[processes]
+  app = "python -m bot"

@@ -1,0 +1,21 @@
+services:
+  bot:
+    build: .
+    container_name: telegram-ai-coder-bot
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - DATA_DIR=/app/data
+      - DB_PATH=/app/data/bot.db
+      - WORKSPACES_DIR=/app/data/workspaces
+      - SANDBOX_IMAGE=python:3.12-slim
+      # Путь к workspaces на ХОСТЕ — нужен docker daemon для sandbox-контейнеров.
+      # ${HOST_DATA_DIR} задайте абсолютным путём в .env (см. README), напр.:
+      #   HOST_DATA_DIR=/srv/telegram-ai-coder-bot/data
+      - HOST_WORKSPACES_DIR=${HOST_DATA_DIR}/workspaces
+    volumes:
+      - ${HOST_DATA_DIR}:/app/data
+      # Доступ к docker daemon хоста — чтобы бот мог поднимать sandbox-контейнеры.
+      - /var/run/docker.sock:/var/run/docker.sock
+    # Перед первым запуском подтяните sandbox-образ на хост:
+    #   docker pull python:3.12-slim

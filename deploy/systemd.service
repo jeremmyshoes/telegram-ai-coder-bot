@@ -1,0 +1,17 @@
+[Unit]
+Description=Telegram AI Coder Bot
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/telegram-ai-coder-bot
+EnvironmentFile=/opt/telegram-ai-coder-bot/.env
+ExecStart=/opt/telegram-ai-coder-bot/.venv/bin/python -m bot
+Restart=on-failure
+RestartSec=5s
+User=botuser
+Group=botuser
+
+[Install]
+WantedBy=multi-user.target
