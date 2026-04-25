@@ -31,6 +31,15 @@ class Settings(BaseSettings):
     max_agent_iterations: int = 20
     max_history_messages: int = 40
 
+    image_model: str = Field(
+        default="dall-e-3",
+        description="Модель OpenAI Images API для /img (dall-e-3 / dall-e-2 / gpt-image-1)",
+    )
+    image_size: str = Field(
+        default="1024x1024",
+        description="Размер по умолчанию для /img (например 1024x1024, 1024x1792, 1792x1024)",
+    )
+
     log_level: str = "INFO"
 
     @property
