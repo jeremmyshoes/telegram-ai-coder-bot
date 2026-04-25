@@ -46,9 +46,11 @@ HELP_TEXT = """\
 
 <b>Быстрые команды</b>
 /chat &lt;запрос&gt; — one-shot ответ от текущей модели (без истории, без инструментов)
-/img &lt;промпт&gt; — сгенерировать картинку через OpenAI Images API
+/img &lt;промпт&gt; — сгенерировать картинку (OpenAI / AceData / любой OpenAI-compat)
    • размер: <code>/img -s 1792x1024 закат над морем</code>
    • качество (dall-e-3): <code>/img -q hd кот в очках</code>
+   • модель: <code>/img -m gpt-image-1 космонавт</code>
+   • провайдер: <code>/img -p acedata -m gpt-image-1 кот</code>
 
 <b>Настройка</b>
 /start — приветствие
@@ -97,19 +99,17 @@ _GPT_IMAGE_SIZES = {"1024x1024", "1024x1536", "1536x1024", "auto"}
 
 
 def _parse_img_args(args: str) -> tuple[str, dict[str, str]]:
-    """Простой парсер: вытаскивает -s WxH и -q quality, остальное — промпт."""
+    """Парсер флагов: -s WxH, -q quality, -m model, -p provider; остальное — промпт."""
     flags: dict[str, str] = {}
     tokens = args.split()
     prompt_parts: list[str] = []
+    short = {"-s": "size", "--size": "size", "-q": "quality", "--quality": "quality",
+             "-m": "model", "--model": "model", "-p": "provider", "--provider": "provider"}
     i = 0
     while i < len(tokens):
         t = tokens[i]
-        if t in ("-s", "--size") and i + 1 < len(tokens):
-            flags["size"] = tokens[i + 1]
-            i += 2
-            continue
-        if t in ("-q", "--quality") and i + 1 < len(tokens):
-            flags["quality"] = tokens[i + 1]
+        if t in short and i + 1 < len(tokens):
+            flags[short[t]] = tokens[i + 1]
             i += 2
             continue
         prompt_parts.append(t)
@@ -429,8 +429,11 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
             return
         if not command.args:
             await message.answer(
-                "Использование: <code>/img промпт</code> или "
-                "<code>/img -s 1792x1024 -q hd промпт</code>",
+                "Использование: <code>/img промпт</code>\n"
+                "Флаги: <code>-s WxH</code>, <code>-q hd|standard</code>, "
+                "<code>-m model</code>, <code>-p provider</code>\n"
+                "Пример (AceData + GPT-image): "
+                "<code>/img -p acedata -m gpt-image-1 -s 1024x1024 кот</code>",
                 parse_mode="HTML",
             )
             return
@@ -440,20 +443,36 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
             return
 
         assert message.from_user
-        # Для /img нужен OpenAI-совместимый ключ. По умолчанию берём ключ от
-        # провайдера 'openai'. Если его нет — пробуем текущего провайдера
-        # пользователя, при условии что это OpenAI-compat (не anthropic).
-        key_row = await ctx.db.get_key(message.from_user.id, "openai")
-        used_provider = "openai"
+        # /img работает через любой OpenAI-совместимый провайдер (openai, acedata,
+        # custom и др.). Порядок приоритета:
+        #   1) явный -p provider в команде
+        #   2) текущий провайдер пользователя (если не anthropic)
+        #   3) openai
+        explicit_provider = flags.get("provider")
+        used_provider: str | None = None
+        key_row = None
+        if explicit_provider:
+            if explicit_provider == "anthropic":
+                await message.answer("Anthropic не умеет генерировать картинки. Выберите openai или acedata.")
+                return
+            key_row = await ctx.db.get_key(message.from_user.id, explicit_provider)
+            used_provider = explicit_provider
         if key_row is None:
             user = await ctx.db.ensure_user(message.from_user.id)
             if user.provider and user.provider != "anthropic":
-                key_row = await ctx.db.get_key(message.from_user.id, user.provider)
-                used_provider = user.provider
+                k = await ctx.db.get_key(message.from_user.id, user.provider)
+                if k is not None:
+                    key_row, used_provider = k, user.provider
         if key_row is None:
+            k = await ctx.db.get_key(message.from_user.id, "openai")
+            if k is not None:
+                key_row, used_provider = k, "openai"
+        if key_row is None or used_provider is None:
             await message.answer(
-                "Нужен OpenAI ключ для генерации картинок: "
-                "<code>/setkey openai sk-...</code>",
+                "Нужен OpenAI-совместимый ключ для генерации картинок:\n"
+                "<code>/setkey openai sk-...</code> или "
+                "<code>/setkey acedata ваш-ключ</code>.\n"
+                "Можно явно: <code>/img -p acedata -m gpt-image-1 кот в очках</code>.",
                 parse_mode="HTML",
             )
             return
@@ -472,7 +491,13 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
             base_url=effective_base,
         )
 
-        model = ctx.settings.image_model
+        # Модель: -m flag > дефолт для acedata (gpt-image-1) > глобальный IMAGE_MODEL
+        if "model" in flags:
+            model = flags["model"]
+        elif used_provider == "acedata":
+            model = "gpt-image-1"
+        else:
+            model = ctx.settings.image_model
         size = flags.get("size", ctx.settings.image_size)
         quality = flags.get("quality")
 
