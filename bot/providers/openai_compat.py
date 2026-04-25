@@ -25,6 +25,21 @@ class GeneratedImage:
     revised_prompt: str | None = None
 
 
+# Префиксы моделей OpenAI, которые поддерживают только дефолтный temperature=1
+# и используют max_completion_tokens вместо max_tokens (reasoning-семейство).
+_REASONING_MODEL_PREFIXES: tuple[str, ...] = (
+    "o1",
+    "o3",
+    "o4",
+    "gpt-5",
+)
+
+
+def _is_reasoning_model(model: str) -> bool:
+    name = model.lower()
+    return any(name.startswith(p) for p in _REASONING_MODEL_PREFIXES)
+
+
 class OpenAICompatProvider:
     """Любой провайдер с OpenAI-совместимым `/chat/completions`."""
 
@@ -41,13 +56,18 @@ class OpenAICompatProvider:
         temperature: float = 0.7,
         max_tokens: int | None = None,
     ) -> LLMResponse:
+        reasoning = _is_reasoning_model(model)
         payload: dict[str, Any] = {
             "model": model,
             "messages": [m.to_dict() for m in messages],
-            "temperature": temperature,
         }
+        if not reasoning:
+            payload["temperature"] = temperature
         if max_tokens is not None:
-            payload["max_tokens"] = max_tokens
+            if reasoning:
+                payload["max_completion_tokens"] = max_tokens
+            else:
+                payload["max_tokens"] = max_tokens
         if tools:
             payload["tools"] = [t.to_openai() for t in tools]
             payload["tool_choice"] = "auto"
@@ -138,10 +158,15 @@ class OpenAICompatProvider:
                     raise ProviderError(
                         f"{self.name}: ответ только URL, нужен httpx для скачивания"
                     ) from exc
-                async with httpx.AsyncClient(timeout=60.0) as http:
-                    r = await http.get(url)
-                    r.raise_for_status()
-                    images.append(GeneratedImage(data=r.content, revised_prompt=revised))
+                try:
+                    async with httpx.AsyncClient(timeout=60.0) as http:
+                        r = await http.get(url)
+                        r.raise_for_status()
+                        images.append(GeneratedImage(data=r.content, revised_prompt=revised))
+                except Exception as exc:  # noqa: BLE001
+                    raise ProviderError(
+                        f"{self.name}: не удалось скачать изображение по URL: {exc}"
+                    ) from exc
             else:
                 raise ProviderError(f"{self.name}: пустой image response без b64_json/url")
         if not images:
