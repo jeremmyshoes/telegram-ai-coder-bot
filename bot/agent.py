@@ -92,7 +92,12 @@ class Agent:
         for iteration in range(1, self.max_iterations + 1):
             logger.debug("agent iteration %d / %d", iteration, self.max_iterations)
             if on_event:
-                await on_event(AgentEvent(kind="thinking", text=f"Итерация {iteration}…"))
+                # В chat-режиме (без инструментов) итерация всегда одна — нет смысла
+                # показывать «Итерация N…», это сбивает с толку.
+                if self.tools is None:
+                    await on_event(AgentEvent(kind="thinking", text="⏳ Думаю…"))
+                else:
+                    await on_event(AgentEvent(kind="thinking", text=f"Итерация {iteration}…"))
 
             response = await self.provider.complete(
                 messages=messages,
