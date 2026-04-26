@@ -26,6 +26,11 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_LIMIT = 4000  # запас от 4096
 
+# Провайдеры с поддержкой OpenAI Images API (`/v1/images/generations`).
+# Используется в find_image_key(), чтобы не пытаться генерить картинки на
+# чисто-чат провайдерах вроде groq/cerebras/deepseek.
+IMAGE_CAPABLE_PROVIDERS: tuple[str, ...] = ("openai", "acedata", "custom")
+
 
 class AppContext:
     """Контейнер общих зависимостей, прокидываемый в handlers."""
@@ -101,12 +106,16 @@ class AppContext:
     ) -> tuple[Any, str] | None:
         """Подбирает (key_row, provider_name) для команды /img.
 
-        Сначала смотрит персональные ключи user_id (логика как раньше),
-        потом — ключи администратора, чтобы сестра/гость могли пользоваться
-        /img без собственного /setkey.
+        Сначала смотрит персональные ключи user_id, потом — ключи
+        администратора (fallback для не-админов).
+
+        При отсутствии явного `-p`: предпочитаем провайдеров, у которых
+        реально есть Images API (openai, acedata). Текущий провайдер юзера
+        используется только если он входит в этот список — иначе мы бы
+        ходили в `/v1/images/generations` на Groq/Deepseek/Cerebras и
+        получали 404. Anthropic тоже исключён.
 
         Возвращает None если нигде ничего не нашлось.
-        Anthropic исключается из перебора — у него нет генерации картинок.
         """
         candidates: list[int] = [user_id]
         for admin_id in self._fallback_admin_ids():
@@ -122,13 +131,18 @@ class AppContext:
                     return key_row, explicit_provider
                 continue
             user = await self.db.ensure_user(uid)
-            if user.provider and user.provider != "anthropic":
+            # 1. Текущий провайдер юзера, если он умеет картинки.
+            if user.provider in IMAGE_CAPABLE_PROVIDERS:
                 k = await self.db.get_key(uid, user.provider)
                 if k is not None:
                     return k, user.provider
-            k = await self.db.get_key(uid, "openai")
-            if k is not None:
-                return k, "openai"
+            # 2. Прямой перебор известных image-capable провайдеров.
+            for prov in IMAGE_CAPABLE_PROVIDERS:
+                if prov == user.provider:
+                    continue  # уже пробовали выше
+                k = await self.db.get_key(uid, prov)
+                if k is not None:
+                    return k, prov
         return None
 
     async def load_history(self, user_id: int) -> list[Message]:
