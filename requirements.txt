@@ -12,3 +12,7 @@ pypdf==5.1.0
 docx2txt==0.8
 openpyxl==3.1.5
 striprtf==0.0.26
+# OCR: рендеринг PDF-страниц в картинки для скан-PDF без текста.
+# pypdfium2 поставляется как self-contained wheel с PDFium-бинарём,
+# работает на linux-aarch64 (Termux) без сборки из исходников.
+pypdfium2==4.30.0

@@ -25,7 +25,11 @@ from aiogram.types import Message as TgMessage
 
 from bot.agent import Agent, AgentEvent
 from bot.handlers.common import AppContext, is_allowed, send_llm_response
-from bot.handlers.file_extract import SUPPORTED_DOC_EXTS, extract_doc_by_ext
+from bot.handlers.file_extract import (
+    SUPPORTED_DOC_EXTS,
+    extract_doc_by_ext,
+    render_pdf_to_jpegs,
+)
 from bot.providers.base import ImageData, ProviderError
 from bot.tools import build_tool_registry
 from bot.tools.sandbox import build_sandbox
@@ -38,6 +42,9 @@ MAX_TEXT_INLINE = 256 * 1024  # сколько байт текста цепля�
 # Для документов (PDF/DOCX/XLSX) ограничение жёстче — после извлечения
 # текст уже почти готов к prompt, и LLM лучше съест ~120K символов чем 256K.
 MAX_EXTRACTED_DOC = 120 * 1024
+# Максимум страниц PDF которые рендерим в картинки при OCR-fallback.
+# Vision-запрос с большим числом картинок: дорого + медленно + риск 413.
+MAX_OCR_PAGES = 6
 TEXT_EXTS = {
     ".txt", ".md", ".rst", ".log", ".csv", ".tsv", ".ini", ".cfg", ".conf",
     ".toml", ".yaml", ".yml", ".json", ".xml", ".html", ".htm", ".css", ".js",
@@ -126,7 +133,41 @@ def register_file_handlers(dp: Dispatcher, ctx: AppContext) -> None:
                 )
                 await _vision_reply(ctx, message, images=[], user_text=prompt)
                 return
-            # Не получилось извлечь — даём понятную ошибку.
+            # Не получилось извлечь текст. Для PDF без текста (сканов)
+            # — fallback в OCR через vision-модель.
+            if ext == ".pdf":
+                try:
+                    pages, total_pages = render_pdf_to_jpegs(
+                        target, max_pages=MAX_OCR_PAGES
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception("PDF render for OCR failed")
+                    pages, total_pages = [], 0
+                if pages:
+                    note = await message.answer(
+                        f"📄 PDF без текста — распознаю {len(pages)} "
+                        f"страниц(ы) через vision…"
+                    )
+                    user_q = (message.caption or "").strip() or (
+                        "Это PDF из сканов. Извлеки весь текст со страниц "
+                        "и кратко перескажи содержание. Сохраняй структуру."
+                    )
+                    truncated_pages = total_pages > len(pages)
+                    if truncated_pages:
+                        user_q += (
+                            f"\n\n(Прислано первые {len(pages)} из {total_pages} "
+                            "страниц — остальные пропущены.)"
+                        )
+                    images = [
+                        ImageData(data=b, mime="image/jpeg") for b in pages
+                    ]
+                    with suppress(Exception):
+                        await note.delete()
+                    await _vision_reply(
+                        ctx, message, images=images, user_text=user_q
+                    )
+                    return
+            # Не PDF или рендер не получился — понятная ошибка.
             err = (extracted.error if extracted else "формат не поддержан") or "пусто"
             await message.answer(
                 f"⚠ Не смог прочитать <code>{html_escape(filename)}</code>: {html_escape(err)}",
