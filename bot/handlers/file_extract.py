@@ -18,8 +18,10 @@
 
 from __future__ import annotations
 
+import io
 import logging
 import re
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -162,6 +164,53 @@ def extract_doc(path: Path) -> ExtractedDoc:
             "Сохраните файл как .docx или .pdf и пришлите снова."
         ),
     )
+
+
+def render_pdf_to_jpegs(
+    path: Path,
+    *,
+    max_pages: int = 8,
+    scale: float = 1.5,
+    jpeg_quality: int = 85,
+) -> tuple[list[bytes], int]:
+    """Рендерит первые `max_pages` страниц PDF в JPEG-байты.
+
+    Используется для OCR PDF-сканов: pypdf не достал текст → рендерим
+    страницы в картинки и отдаём их vision-модели.
+
+    Возвращает (список JPEG bytes, всего страниц в PDF).
+    На ошибке (нет pypdfium2 / повреждённый PDF) — `([], 0)`.
+    """
+    try:
+        import pypdfium2 as pdfium
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("pypdfium2 не установлен: %s", exc)
+        return [], 0
+    try:
+        doc = pdfium.PdfDocument(str(path))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("PDFium не смог открыть %s: %s", path, exc)
+        return [], 0
+    total = len(doc)
+    out: list[bytes] = []
+    try:
+        for i in range(min(total, max_pages)):
+            try:
+                page = doc[i]
+                pil = page.render(scale=scale).to_pil()
+                # Стандартизуем в RGB JPEG, чтобы передавать в OpenAI vision.
+                if pil.mode != "RGB":
+                    pil = pil.convert("RGB")
+                buf = io.BytesIO()
+                pil.save(buf, format="JPEG", quality=jpeg_quality, optimize=True)
+                out.append(buf.getvalue())
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("PDF page %d render failed: %s", i + 1, exc)
+                continue
+    finally:
+        with suppress(Exception):
+            doc.close()
+    return out, total
 
 
 def extract_doc_by_ext(path: Path, ext: str) -> ExtractedDoc | None:
