@@ -23,13 +23,14 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.types import Document, PhotoSize
 from aiogram.types import Message as TgMessage
 
-from bot.agent import Agent, AgentEvent
+from bot.agent import SYSTEM_PROMPT_AGENT, SYSTEM_PROMPT_CHAT, Agent, AgentEvent
 from bot.handlers.common import AppContext, is_allowed, send_llm_response
 from bot.handlers.file_extract import (
     SUPPORTED_DOC_EXTS,
     extract_doc_by_ext,
     render_pdf_to_jpegs,
 )
+from bot.handlers.personas import apply_persona
 from bot.providers.base import ImageData, ProviderError
 from bot.tools import build_tool_registry
 from bot.tools.sandbox import build_sandbox
@@ -281,8 +282,17 @@ async def _vision_reply(
         with suppress(Exception):
             await progress.edit_text("\n".join(log_lines[-12:])[-3500:])
 
+    base_prompt = SYSTEM_PROMPT_AGENT if tools else SYSTEM_PROMPT_CHAT
+    sys_prompt = apply_persona(base_prompt, user_settings.persona)
+
     try:
-        result = await agent.run(history, user_text, on_event=on_event, images=images)
+        result = await agent.run(
+            history,
+            user_text,
+            on_event=on_event,
+            images=images,
+            system_prompt=sys_prompt,
+        )
     except ProviderError as exc:
         await progress.edit_text(f"⚠ Ошибка провайдера: {exc}")
         return

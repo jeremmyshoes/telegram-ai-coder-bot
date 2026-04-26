@@ -10,6 +10,7 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
 )
 
+from bot.handlers.personas import PERSONAS
 from bot.providers import PROVIDER_PRESETS
 
 # Текстовые лейблы кнопок (используются и Reply-клавиатурой, и inline).
@@ -21,6 +22,7 @@ BTN_RESET = "🧹 Сброс"
 BTN_HELP = "ℹ️ Помощь"
 BTN_SETTINGS = "⚙️ Настройки"
 BTN_ADMIN = "🛠 Админ"
+BTN_PERSONA = "🎭 Стиль"
 
 MAIN_MENU_LABELS = {BTN_CHAT, BTN_IMAGE, BTN_SETTINGS, BTN_HELP, BTN_STATUS}
 
@@ -34,10 +36,13 @@ def main_menu_inline_kb(is_admin: bool = False) -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(text=BTN_SEARCH, callback_data="act:search"),
-            InlineKeyboardButton(text=BTN_STATUS, callback_data="act:status"),
+            InlineKeyboardButton(text=BTN_PERSONA, callback_data="menu:persona"),
         ],
         [
+            InlineKeyboardButton(text=BTN_STATUS, callback_data="act:status"),
             InlineKeyboardButton(text=BTN_RESET, callback_data="act:reset"),
+        ],
+        [
             InlineKeyboardButton(text=BTN_HELP, callback_data="act:help"),
         ],
     ]
@@ -129,6 +134,33 @@ def models_kb(provider_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def persona_kb(current: str | None) -> InlineKeyboardMarkup:
+    """Inline-сетка персон. Текущая помечается ✅."""
+    rows: list[list[InlineKeyboardButton]] = []
+    cur_row: list[InlineKeyboardButton] = []
+    for p in PERSONAS.values():
+        prefix = "✅ " if current == p.key else ""
+        cur_row.append(
+            InlineKeyboardButton(
+                text=f"{prefix}{p.emoji} {p.name}",
+                callback_data=f"persona:{p.key}",
+            )
+        )
+        if len(cur_row) == 2:
+            rows.append(cur_row)
+            cur_row = []
+    if cur_row:
+        rows.append(cur_row)
+    off_label = "🚫 Выключить" if current else "✅ 🚫 Выключено"
+    rows.append(
+        [InlineKeyboardButton(text=off_label, callback_data="persona:off")]
+    )
+    rows.append(
+        [InlineKeyboardButton(text="⬅ Назад", callback_data="menu:home")]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def mode_kb(current: str | None) -> InlineKeyboardMarkup:
     def _label(value: str, title: str) -> str:
         return f"✅ {title}" if current == value else title
@@ -153,6 +185,7 @@ USER_BOT_COMMANDS: list[BotCommand] = [
     BotCommand(command="img", description="Сгенерировать картинку"),
     BotCommand(command="search", description="Умный веб-поиск со ссылками"),
     BotCommand(command="yt", description="Пересказ YouTube-видео"),
+    BotCommand(command="persona", description="Стиль общения (гопник, профессор, …)"),
     BotCommand(command="status", description="Текущие настройки"),
     BotCommand(command="reset", description="Очистить историю"),
     BotCommand(command="help", description="Справка"),

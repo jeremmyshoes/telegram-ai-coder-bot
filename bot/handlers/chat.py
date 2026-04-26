@@ -10,8 +10,9 @@ from contextlib import suppress
 from aiogram import Dispatcher, F
 from aiogram.types import Message as TgMessage
 
-from bot.agent import Agent, AgentEvent
+from bot.agent import SYSTEM_PROMPT_AGENT, SYSTEM_PROMPT_CHAT, Agent, AgentEvent
 from bot.handlers.common import AppContext, is_allowed, send_llm_response
+from bot.handlers.personas import apply_persona
 from bot.providers.base import ProviderError
 from bot.tools import build_tool_registry
 from bot.tools.sandbox import build_sandbox
@@ -84,8 +85,16 @@ def register_chat_handlers(dp: Dispatcher, ctx: AppContext) -> None:
             with suppress(Exception):
                 await progress.edit_text(text[-3500:])
 
+        base_prompt = SYSTEM_PROMPT_AGENT if tools else SYSTEM_PROMPT_CHAT
+        sys_prompt = apply_persona(base_prompt, user_settings.persona)
+
         try:
-            result = await agent.run(history, message.text, on_event=on_event)
+            result = await agent.run(
+                history,
+                message.text,
+                on_event=on_event,
+                system_prompt=sys_prompt,
+            )
         except ProviderError as exc:
             await progress.edit_text(f"⚠ Ошибка провайдера: {exc}")
             return

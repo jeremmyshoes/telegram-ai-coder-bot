@@ -37,8 +37,13 @@ from bot.handlers.keyboards import (
     main_menu_inline_kb,
     mode_kb,
     models_kb,
+    persona_kb,
     providers_kb,
     settings_kb,
+)
+from bot.handlers.personas import (
+    get_persona,
+    list_personas_html,
 )
 from bot.providers import PROVIDER_PRESETS, ImageData, Message, ProviderError
 from bot.providers.openai_compat import OpenAICompatProvider
@@ -66,6 +71,7 @@ USER_HELP_TEXT = """\
 /search -raw &lt;запрос&gt; — сырой список ссылок без LLM-синтеза
 /yt &lt;url&gt; — пересказ YouTube-видео (Whisper → gpt-5)
 /yt -full &lt;url&gt; — полный транскрипт без пересказа
+/persona &lt;ключ&gt; — стиль общения (gopnik, professor, child, …)
 /status — текущие настройки
 /reset — очистить историю
 /menu — открыть меню
@@ -395,11 +401,18 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
         user = await ctx.db.ensure_user(message.from_user.id)
         keys = await ctx.db.list_keys(message.from_user.id)
         wd = ctx.workdir_for(message.from_user.id)
+        cur_persona = get_persona(user.persona)
+        persona_line = (
+            f"{cur_persona.emoji} {cur_persona.name} (<code>{cur_persona.key}</code>)"
+            if cur_persona
+            else "—"
+        )
         text = (
             f"<b>Статус</b>\n"
             f"Провайдер: <code>{user.provider or '—'}</code>\n"
             f"Модель: <code>{user.model or '—'}</code>\n"
             f"Режим: <code>{user.mode}</code>\n"
+            f"Стиль: {persona_line}\n"
             f"Ключей сохранено: {len(keys)}\n"
             f"Рабочая папка: <code>{wd}</code>"
         )
@@ -412,6 +425,56 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
         assert message.from_user
         await ctx.db.clear_history(message.from_user.id)
         await message.answer("История очищена.")
+
+    @dp.message(Command("persona"))
+    async def cmd_persona(
+        message: TgMessage, command: CommandObject
+    ) -> None:
+        if not is_allowed(ctx.settings, _user_id(message)):
+            return
+        assert message.from_user
+        user = await ctx.db.ensure_user(message.from_user.id)
+        arg = (command.args or "").strip().lower()
+
+        # Без аргумента — показываем список + текущую персону + клавиатуру
+        if not arg:
+            current = get_persona(user.persona)
+            cur_line = (
+                f"Сейчас: <b>{current.emoji} {current.name}</b> "
+                f"(<code>{current.key}</code>)"
+                if current
+                else "Сейчас: <b>обычный режим</b> (без стиля)"
+            )
+            text = f"{cur_line}\n\n{list_personas_html()}"
+            await message.answer(
+                text,
+                parse_mode="HTML",
+                reply_markup=persona_kb(user.persona),
+            )
+            return
+
+        if arg in {"off", "none", "сбросить", "выкл", "default"}:
+            await ctx.db.update_user(message.from_user.id, clear_persona=True)
+            await message.answer(
+                "Стиль выключен — обычный режим.",
+                reply_markup=persona_kb(None),
+            )
+            return
+
+        p = get_persona(arg)
+        if p is None:
+            await message.answer(
+                f"Неизвестный стиль: <code>{html.escape(arg)}</code>.\n\n"
+                + list_personas_html(),
+                parse_mode="HTML",
+            )
+            return
+        await ctx.db.update_user(message.from_user.id, persona=p.key)
+        await message.answer(
+            f"Включён стиль: <b>{p.emoji} {p.name}</b>",
+            parse_mode="HTML",
+            reply_markup=persona_kb(p.key),
+        )
 
     @dp.message(Command("workdir"))
     async def cmd_workdir(message: TgMessage) -> None:
@@ -908,11 +971,18 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
         user = await ctx.db.ensure_user(message.from_user.id)
         keys = await ctx.db.list_keys(message.from_user.id)
         wd = ctx.workdir_for(message.from_user.id)
+        cur_persona = get_persona(user.persona)
+        persona_line = (
+            f"{cur_persona.emoji} {cur_persona.name} (<code>{cur_persona.key}</code>)"
+            if cur_persona
+            else "—"
+        )
         await message.answer(
             f"<b>Статус</b>\n"
             f"Провайдер: <code>{user.provider or '—'}</code>\n"
             f"Модель: <code>{user.model or '—'}</code>\n"
             f"Режим: <code>{user.mode}</code>\n"
+            f"Стиль: {persona_line}\n"
             f"Ключей сохранено: {len(keys)}\n"
             f"Рабочая папка: <code>{wd}</code>",
             parse_mode="HTML",
@@ -985,6 +1055,38 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
             )
         await query.answer(f"✓ {mode}")
 
+    @dp.callback_query(F.data.startswith("persona:"))
+    async def cb_select_persona(query: CallbackQuery) -> None:
+        if not is_allowed(ctx.settings, query.from_user.id):
+            await query.answer("Доступ запрещён", show_alert=True)
+            return
+        key = query.data.split(":", 1)[1] if query.data else ""
+        uid = query.from_user.id
+        if key == "off":
+            await ctx.db.update_user(uid, clear_persona=True)
+            text = "Сейчас: <b>обычный режим</b>"
+            with suppress(Exception):
+                await query.message.edit_text(
+                    f"{text}\n\n{list_personas_html()}",
+                    parse_mode="HTML",
+                    reply_markup=persona_kb(None),
+                )
+            await query.answer("✓ выкл")
+            return
+        p = get_persona(key)
+        if p is None:
+            await query.answer("Неизвестный стиль", show_alert=True)
+            return
+        await ctx.db.update_user(uid, persona=p.key)
+        text = f"Сейчас: <b>{p.emoji} {p.name}</b>"
+        with suppress(Exception):
+            await query.message.edit_text(
+                f"{text}\n\n{list_personas_html()}",
+                parse_mode="HTML",
+                reply_markup=persona_kb(p.key),
+            )
+        await query.answer(f"✓ {p.name}")
+
     @dp.callback_query(F.data.startswith("act:"))
     async def cb_action(query: CallbackQuery) -> None:
         """Обработчик кнопок главного инлайн-меню (юзерских)."""
@@ -1031,11 +1133,18 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
         if action == "status":
             user = await ctx.db.ensure_user(uid)
             keys = await ctx.db.list_keys(uid)
+            cur_persona = get_persona(user.persona)
+            persona_line = (
+                f"{cur_persona.emoji} {cur_persona.name}"
+                if cur_persona
+                else "—"
+            )
             text = (
                 "<b>📊 Статус</b>\n"
                 f"Провайдер: <code>{user.provider or '—'}</code>\n"
                 f"Модель: <code>{user.model or '—'}</code>\n"
                 f"Режим: <code>{user.mode}</code>\n"
+                f"Стиль: {persona_line}\n"
                 f"Ключей: {len(keys)}"
             )
             with suppress(Exception):
@@ -1096,6 +1205,22 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
                     "<b>🛠 Админ-меню</b>",
                     parse_mode="HTML",
                     reply_markup=admin_kb(),
+                )
+            await query.answer()
+            return
+        if action == "persona":
+            user = await ctx.db.ensure_user(uid)
+            current = get_persona(user.persona)
+            cur_line = (
+                f"Сейчас: <b>{current.emoji} {current.name}</b>"
+                if current
+                else "Сейчас: <b>обычный режим</b>"
+            )
+            with suppress(Exception):
+                await query.message.edit_text(
+                    f"{cur_line}\n\n{list_personas_html()}",
+                    parse_mode="HTML",
+                    reply_markup=persona_kb(user.persona),
                 )
             await query.answer()
             return

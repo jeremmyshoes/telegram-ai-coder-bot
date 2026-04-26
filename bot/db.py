@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS users (
     model          TEXT,
     mode           TEXT DEFAULT 'agent',  -- 'agent' | 'chat'
     system_prompt  TEXT,
+    persona        TEXT,                  -- ключ из bot.handlers.personas.PERSONAS
     created_at     TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at     TEXT DEFAULT CURRENT_TIMESTAMP
 );
@@ -48,6 +49,7 @@ class UserSettings:
     model: str | None
     mode: str
     system_prompt: str | None
+    persona: str | None = None
 
 
 @dataclass
@@ -65,7 +67,17 @@ class Database:
     async def connect(self) -> None:
         self._conn = await aiosqlite.connect(self.path)
         await self._conn.executescript(SCHEMA)
+        await self._migrate()
         await self._conn.commit()
+
+    async def _migrate(self) -> None:
+        """Лёгкие миграции для уже существующих БД (новые колонки и т.п.)."""
+        async with self.conn.execute("PRAGMA table_info(users)") as cur:
+            cols = {row[1] for row in await cur.fetchall()}
+        if "persona" not in cols:
+            await self.conn.execute(
+                "ALTER TABLE users ADD COLUMN persona TEXT"
+            )
 
     async def close(self) -> None:
         if self._conn is not None:
@@ -82,20 +94,29 @@ class Database:
 
     async def ensure_user(self, user_id: int) -> UserSettings:
         async with self.conn.execute(
-            "SELECT user_id, provider, model, mode, system_prompt FROM users WHERE user_id=?",
+            "SELECT user_id, provider, model, mode, system_prompt, persona "
+            "FROM users WHERE user_id=?",
             (user_id,),
         ) as cur:
             row = await cur.fetchone()
         if row is None:
             await self.conn.execute("INSERT INTO users (user_id) VALUES (?)", (user_id,))
             await self.conn.commit()
-            return UserSettings(user_id=user_id, provider=None, model=None, mode="agent", system_prompt=None)
+            return UserSettings(
+                user_id=user_id,
+                provider=None,
+                model=None,
+                mode="agent",
+                system_prompt=None,
+                persona=None,
+            )
         return UserSettings(
             user_id=row[0],
             provider=row[1],
             model=row[2],
             mode=row[3] or "agent",
             system_prompt=row[4],
+            persona=row[5],
         )
 
     async def update_user(
@@ -106,6 +127,8 @@ class Database:
         model: str | None = None,
         mode: str | None = None,
         system_prompt: str | None = None,
+        persona: str | None = None,
+        clear_persona: bool = False,
     ) -> None:
         await self.ensure_user(user_id)
         fields: list[str] = []
@@ -122,6 +145,11 @@ class Database:
         if system_prompt is not None:
             fields.append("system_prompt=?")
             values.append(system_prompt)
+        if clear_persona:
+            fields.append("persona=NULL")
+        elif persona is not None:
+            fields.append("persona=?")
+            values.append(persona)
         if not fields:
             return
         fields.append("updated_at=CURRENT_TIMESTAMP")
