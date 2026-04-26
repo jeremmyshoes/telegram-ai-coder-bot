@@ -31,8 +31,13 @@ _SAFE_LINK_SCHEMES = ("http://", "https://", "tg://", "mailto:")
 
 
 def _escape(text: str) -> str:
-    """HTML-экранирование (без перекодировки кавычек — Telegram их не требует)."""
+    """HTML-экранирование (без кавычек — Telegram их не требует в тексте)."""
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _escape_attr(text: str) -> str:
+    """То же что _escape, плюс двойные кавычки — для значений атрибутов."""
+    return _escape(text).replace('"', "&quot;")
 
 
 def _is_safe_link(url: str) -> bool:
@@ -64,7 +69,7 @@ def md_to_telegram_html(text: str) -> str:  # noqa: C901  — сложность
         body_esc = _escape(body)
         if lang:
             html = (
-                f'<pre><code class="language-{_escape(lang)}">'
+                f'<pre><code class="language-{_escape_attr(lang)}">'
                 f"{body_esc}</code></pre>"
             )
         else:
@@ -92,10 +97,9 @@ def md_to_telegram_html(text: str) -> str:  # noqa: C901  — сложность
         url = m.group(2).strip()
         if not _is_safe_link(url):
             return _stash(_escape(label))
-        # url не экранируем кавычками — Telegram сам валидирует. Двойные кавычки
-        # в URL невалидны, но на всякий заменим.
-        url_safe = url.replace('"', "")
-        return _stash(f'<a href="{url_safe}">{_escape(label)}</a>')
+        # URL экранируем как атрибут (особенно важно для кавычек, иначе href
+        # развалится).
+        return _stash(f'<a href="{_escape_attr(url)}">{_escape(label)}</a>')
 
     text = re.sub(r"\[([^\]\n]+)\]\(([^)\n]+)\)", _link, text)
 

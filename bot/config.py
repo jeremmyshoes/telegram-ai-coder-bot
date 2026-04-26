@@ -47,6 +47,14 @@ class Settings(BaseSettings):
         ),
     )
 
+    search_synth_model: str = Field(
+        default="gpt-5",
+        description=(
+            "Модель OpenAI для синтеза ответа в perplexity-режиме /search. "
+            "Используется openai-ключ юзера или администратора."
+        ),
+    )
+
     google_search_api_key: str = Field(
         default="",
         description="API key из Google Cloud Console (для Custom Search JSON API).",

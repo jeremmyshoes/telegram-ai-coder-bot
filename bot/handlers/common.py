@@ -145,6 +145,37 @@ class AppContext:
                     return k, prov
         return None
 
+    async def find_openai_key(self, user_id: int) -> tuple[str, str | None] | None:
+        """Возвращает (api_key, base_url) для OpenAI-ключа.
+
+        Используется фичами, которым нужна именно OpenAI-модель (например,
+        `gpt-5` для perplexity-режима `/search`). Сначала смотрит ключ
+        самого user_id, потом — ключи админов. Если openai-ключа нет нигде,
+        пробует acedata (тоже OpenAI-совместимый прокси с теми же моделями).
+        """
+        # Порядок поиска: сам юзер, потом админы. Препочтительно "openai",
+        # запасной — "acedata" (он тоже proxy'ит на OpenAI API под gpt-* моделями).
+        candidates: list[int] = [user_id]
+        for admin_id in self._fallback_admin_ids():
+            if admin_id != user_id and admin_id not in candidates:
+                candidates.append(admin_id)
+
+        for prov in ("openai", "acedata"):
+            for uid in candidates:
+                key_row = await self.db.get_key(uid, prov)
+                if key_row is None:
+                    continue
+                try:
+                    api_key = self.vault.decrypt(key_row.encrypted)
+                except RuntimeError:
+                    continue
+                base_url = key_row.base_url
+                if not base_url:
+                    preset = PROVIDER_PRESETS.get(prov)
+                    base_url = preset.base_url if preset else None
+                return api_key, base_url
+        return None
+
     async def load_history(self, user_id: int) -> list[Message]:
         rows = await self.db.get_history(user_id, limit=self.settings.max_history_messages)
         return [_message_from_dict(r) for r in rows]
