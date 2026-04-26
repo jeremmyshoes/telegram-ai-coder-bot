@@ -266,7 +266,11 @@ def register_yt_handlers(dp: Dispatcher, ctx: AppContext) -> None:
             await message.answer("Модель вернула пустой пересказ.")
             return
 
-        head = f"📺 <b>{html_escape(title)}</b>\n\n"
+        # Используем markdown **bold**, а не HTML <b>: send_llm_response
+        # прогоняет текст через md_to_telegram_html, который HTML-экранирует
+        # любые <…> теги — без markdown заголовок выглядел бы как
+        # литеральные <b>title</b>.
+        head = f"📺 **{title}**\n\n"
         await send_llm_response(message, head + summary)
         await message.answer(
             "💬 Полный транскрипт: <code>/yt -full URL</code>",
