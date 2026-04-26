@@ -141,7 +141,7 @@ async def duckduckgo_search(
         raise WebSearchError(f"DuckDuckGo HTTP {r.status_code}")
 
     body = r.text or ""
-    if "anomaly" in body.lower() or "blocked" in body.lower() and "result__a" not in body:
+    if ("anomaly" in body.lower() or "blocked" in body.lower()) and "result__a" not in body:
         raise WebSearchError(
             "DuckDuckGo временно блокирует запросы (rate-limit). Повторите через минуту."
         )

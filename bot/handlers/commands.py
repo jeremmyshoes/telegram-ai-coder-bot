@@ -525,7 +525,9 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
             return
         with suppress(Exception):
             await thinking.delete()
-        header = f"<i>via {html.escape(used)}</i>\n\n"
+        # Без HTML-разметки — результаты содержат произвольные строки/URL, которые
+        # ломали бы Telegram HTML-парсер при отправке как parse_mode='HTML'.
+        header = f"(via {used})\n\n"
         await send_long(message, header + format_search_results(results))
 
     @dp.message(Command("img"))
