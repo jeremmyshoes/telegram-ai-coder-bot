@@ -25,6 +25,7 @@
 
 from __future__ import annotations
 
+import html
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -128,10 +129,19 @@ class AuditIncomingMiddleware(BaseMiddleware):
             bot: Bot | None = data.get("bot")
             if bot is not None:
                 u = event.from_user
-                handle = f"@{u.username}" if u.username else f"id{u.id}"
-                full_name = " ".join(
-                    filter(None, [u.first_name, u.last_name])
-                ) or "?"
+                # Telegram разрешает в username/имени символы `<`, `>`, `&`,
+                # которые сломают HTML-парсер Telegram-API. Без escape
+                # send_message бы кидал исключение, и тогда в общем try-блоке
+                # упал бы и forward_message — т.е. вредное имя могло бы
+                # «выключить» аудит. Поэтому всё user-controlled экранируем.
+                handle = (
+                    f"@{html.escape(u.username)}"
+                    if u.username
+                    else f"id{u.id}"
+                )
+                full_name = html.escape(
+                    " ".join(filter(None, [u.first_name, u.last_name])) or "?"
+                )
                 try:
                     await bot.send_message(
                         chat_id=self.log_chat_id,
