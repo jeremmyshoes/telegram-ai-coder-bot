@@ -20,6 +20,7 @@ from bot.handlers import (
     register_file_handlers,
     register_yt_handlers,
 )
+from bot.handlers.audit import install_audit
 from bot.handlers.common import AppContext
 from bot.handlers.keyboards import ADMIN_BOT_COMMANDS, USER_BOT_COMMANDS
 
@@ -58,6 +59,12 @@ async def main() -> None:
     register_command_handlers(dp, ctx)
     register_file_handlers(dp, ctx)
     register_chat_handlers(dp, ctx)
+
+    # Audit-логирование в LOG_CHAT_ID (если задан) — должно ставиться
+    # ПОСЛЕ всех register_* (outer_middleware на dp.message пишется в общую
+    # очередь, порядок не критичен, но мы хотим что бы наш middleware
+    # увидел любые сообщения, в т.ч. дошедшие до cmd_unknown).
+    install_audit(dp, bot, settings.log_chat_id)
 
     try:
         me = await bot.get_me()
