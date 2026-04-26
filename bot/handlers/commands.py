@@ -555,7 +555,7 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
         else:
             model = ctx.settings.image_model
         size = flags.get("size", ctx.settings.image_size)
-        quality = flags.get("quality")
+        quality = flags.get("quality") or (ctx.settings.image_quality or None)
 
         # Лёгкая валидация
         valid_sizes = (
