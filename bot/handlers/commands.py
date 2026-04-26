@@ -64,6 +64,8 @@ USER_HELP_TEXT = """\
 /img &lt;промпт&gt; — сгенерировать картинку
 /search &lt;вопрос&gt; — умный веб-поиск со ссылками [1][2] (как Perplexity)
 /search -raw &lt;запрос&gt; — сырой список ссылок без LLM-синтеза
+/yt &lt;url&gt; — пересказ YouTube-видео (Whisper → gpt-5)
+/yt -full &lt;url&gt; — полный транскрипт без пересказа
 /status — текущие настройки
 /reset — очистить историю
 /menu — открыть меню

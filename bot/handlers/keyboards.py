@@ -152,6 +152,7 @@ USER_BOT_COMMANDS: list[BotCommand] = [
     BotCommand(command="chat", description="Один вопрос модели (без истории)"),
     BotCommand(command="img", description="Сгенерировать картинку"),
     BotCommand(command="search", description="Умный веб-поиск со ссылками"),
+    BotCommand(command="yt", description="Пересказ YouTube-видео"),
     BotCommand(command="status", description="Текущие настройки"),
     BotCommand(command="reset", description="Очистить историю"),
     BotCommand(command="help", description="Справка"),
