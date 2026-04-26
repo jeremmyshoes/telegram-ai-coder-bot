@@ -39,6 +39,13 @@ class Settings(BaseSettings):
         default="1024x1024",
         description="Размер по умолчанию для /img (например 1024x1024, 1024x1792, 1792x1024)",
     )
+    image_quality: str = Field(
+        default="",
+        description=(
+            "Качество по умолчанию для /img. Для gpt-image-1: low/medium/high/auto. "
+            "Для dall-e-3: standard/hd. Пусто = не передавать (дефолт провайдера)."
+        ),
+    )
 
     google_search_api_key: str = Field(
         default="",
