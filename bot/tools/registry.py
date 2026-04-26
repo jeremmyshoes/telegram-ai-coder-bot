@@ -13,7 +13,7 @@ from bot.tools.sandbox import Sandbox
 from bot.tools.web_search import (
     WebSearchError,
     format_results,
-    google_search,
+    web_search,
 )
 
 logger = logging.getLogger(__name__)
@@ -259,51 +259,53 @@ def build_tool_registry(
     )
 
     # ----------------------------------------------------------- web_search
-    if google_search_api_key and google_search_cse_id:
-
-        async def web_search_handler(args: dict[str, Any]) -> str:
-            query = (args.get("query") or "").strip()
-            num = int(args.get("num_results") or 5)
-            try:
-                results = await google_search(
-                    query,
-                    api_key=google_search_api_key,
-                    cse_id=google_search_cse_id,
-                    num_results=num,
-                )
-            except WebSearchError as exc:
-                return f"[error] web_search: {exc}"
-            return format_results(results)
-
-        reg.register(
-            ToolHandler(
-                definition=ToolDefinition(
-                    name="web_search",
-                    description=(
-                        "Ищет в Google через Custom Search JSON API. "
-                        "Используй когда нужна свежая информация (события после "
-                        "knowledge cutoff модели), факты, проверка цифр, "
-                        "ссылки на источники. Возвращает топ-результатов с "
-                        "title, link и snippet."
-                    ),
-                    parameters={
-                        "type": "object",
-                        "properties": {
-                            "query": {
-                                "type": "string",
-                                "description": "Поисковый запрос (как в google.com)",
-                            },
-                            "num_results": {
-                                "type": "integer",
-                                "description": "Сколько результатов (1..10)",
-                                "default": 5,
-                            },
-                        },
-                        "required": ["query"],
-                    },
-                ),
-                handler=web_search_handler,
+    # Всегда доступен: DuckDuckGo работает без ключей. Если есть Google-ключи —
+    # web_search() автоматически предпочтёт их (см. bot/tools/web_search.py).
+    async def web_search_handler(args: dict[str, Any]) -> str:
+        query = (args.get("query") or "").strip()
+        num = int(args.get("num_results") or 5)
+        try:
+            results, used = await web_search(
+                query,
+                google_api_key=google_search_api_key,
+                google_cse_id=google_search_cse_id,
+                num_results=num,
             )
+        except WebSearchError as exc:
+            return f"[error] web_search: {exc}"
+        header = f"(via {used})\n" if results else ""
+        return header + format_results(results)
+
+    reg.register(
+        ToolHandler(
+            definition=ToolDefinition(
+                name="web_search",
+                description=(
+                    "Ищет в интернете (DuckDuckGo по умолчанию или Google "
+                    "Custom Search, если в .env заданы ключи). Используй "
+                    "когда нужна свежая информация (события после "
+                    "knowledge cutoff модели), факты, проверка цифр, "
+                    "ссылки на источники. Возвращает топ-результатов с "
+                    "title, link и snippet."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Поисковый запрос",
+                        },
+                        "num_results": {
+                            "type": "integer",
+                            "description": "Сколько результатов (1..10)",
+                            "default": 5,
+                        },
+                    },
+                    "required": ["query"],
+                },
+            ),
+            handler=web_search_handler,
         )
+    )
 
     return reg

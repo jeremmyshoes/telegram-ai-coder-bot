@@ -43,7 +43,7 @@ from bot.providers import PROVIDER_PRESETS, ImageData, Message, ProviderError
 from bot.providers.openai_compat import OpenAICompatProvider
 from bot.tools.web_search import (
     WebSearchError,
-    google_search,
+    web_search,
 )
 from bot.tools.web_search import (
     format_results as format_search_results,
@@ -60,7 +60,7 @@ USER_HELP_TEXT = """\
 <b>Основные команды</b>
 /chat &lt;вопрос&gt; — один вопрос модели (без истории)
 /img &lt;промпт&gt; — сгенерировать картинку
-/search &lt;запрос&gt; — поиск в Google
+/search &lt;запрос&gt; — веб-поиск (DuckDuckGo)
 /status — текущие настройки
 /reset — очистить историю
 /menu — открыть меню
@@ -504,28 +504,18 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
         if not query:
             await message.answer(
                 "Использование: <code>/search ваш запрос</code>\n"
-                "Ищет через Google Custom Search API.",
-                parse_mode="HTML",
-            )
-            return
-        if not (
-            ctx.settings.google_search_api_key and ctx.settings.google_search_cse_id
-        ):
-            await message.answer(
-                "Web-поиск не настроен.\n"
-                "Добавьте в <code>.env</code>:\n"
-                "<code>GOOGLE_SEARCH_API_KEY=…</code>\n"
-                "<code>GOOGLE_SEARCH_CSE_ID=…</code>\n"
-                "и перезапустите бота. Подробнее: https://developers.google.com/custom-search/v1/overview",
+                "По умолчанию использует DuckDuckGo (без ключей). Если в "
+                "<code>.env</code> заданы <code>GOOGLE_SEARCH_API_KEY</code> + "
+                "<code>GOOGLE_SEARCH_CSE_ID</code> — будет использован Google.",
                 parse_mode="HTML",
             )
             return
         thinking = await message.answer("🔎 Ищу…")
         try:
-            results = await google_search(
+            results, used = await web_search(
                 query,
-                api_key=ctx.settings.google_search_api_key,
-                cse_id=ctx.settings.google_search_cse_id,
+                google_api_key=ctx.settings.google_search_api_key,
+                google_cse_id=ctx.settings.google_search_cse_id,
                 num_results=5,
             )
         except WebSearchError as exc:
@@ -535,7 +525,8 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
             return
         with suppress(Exception):
             await thinking.delete()
-        await send_long(message, format_search_results(results))
+        header = f"<i>via {html.escape(used)}</i>\n\n"
+        await send_long(message, header + format_search_results(results))
 
     @dp.message(Command("img"))
     async def cmd_img(message: TgMessage, command: CommandObject) -> None:
@@ -722,11 +713,17 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
     async def btn_help(message: TgMessage) -> None:
         if not is_allowed(ctx.settings, message.from_user.id if message.from_user else None):
             return
-        await send_long(message, HELP_TEXT, parse_mode="HTML")
+        await send_long(message, _help_for(_user_id(message)), parse_mode="HTML")
 
     @dp.message(F.text == BTN_SETTINGS)
     async def btn_settings(message: TgMessage) -> None:
+        # Кнопка остаётся для юзеров со старой reply-клавиатурой в кэше Telegram.
+        # admin_kb/settings_kb показываем только админам — без admin-проверки
+        # обычный юзер увидел бы админские кнопки (даже если callback'и потом
+        # отказывают).
         if not is_allowed(ctx.settings, message.from_user.id if message.from_user else None):
+            return
+        if not await _ensure_admin_msg(message):
             return
         await message.answer("⚙️ Настройки:", reply_markup=settings_kb())
 
