@@ -971,11 +971,18 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
         user = await ctx.db.ensure_user(message.from_user.id)
         keys = await ctx.db.list_keys(message.from_user.id)
         wd = ctx.workdir_for(message.from_user.id)
+        cur_persona = get_persona(user.persona)
+        persona_line = (
+            f"{cur_persona.emoji} {cur_persona.name} (<code>{cur_persona.key}</code>)"
+            if cur_persona
+            else "—"
+        )
         await message.answer(
             f"<b>Статус</b>\n"
             f"Провайдер: <code>{user.provider or '—'}</code>\n"
             f"Модель: <code>{user.model or '—'}</code>\n"
             f"Режим: <code>{user.mode}</code>\n"
+            f"Стиль: {persona_line}\n"
             f"Ключей сохранено: {len(keys)}\n"
             f"Рабочая папка: <code>{wd}</code>",
             parse_mode="HTML",
