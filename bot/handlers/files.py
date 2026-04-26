@@ -16,6 +16,7 @@ import io
 import logging
 import time
 from contextlib import suppress
+from html import escape as html_escape
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher, F
@@ -24,6 +25,7 @@ from aiogram.types import Message as TgMessage
 
 from bot.agent import Agent, AgentEvent
 from bot.handlers.common import AppContext, is_allowed, send_llm_response
+from bot.handlers.file_extract import SUPPORTED_DOC_EXTS, extract_doc_by_ext
 from bot.providers.base import ImageData, ProviderError
 from bot.tools import build_tool_registry
 from bot.tools.sandbox import build_sandbox
@@ -33,6 +35,9 @@ logger = logging.getLogger(__name__)
 
 MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 МБ — лимит Telegram-bot API
 MAX_TEXT_INLINE = 256 * 1024  # сколько байт текста цепляем к промпту
+# Для документов (PDF/DOCX/XLSX) ограничение жёстче — после извлечения
+# текст уже почти готов к prompt, и LLM лучше съест ~120K символов чем 256K.
+MAX_EXTRACTED_DOC = 120 * 1024
 TEXT_EXTS = {
     ".txt", ".md", ".rst", ".log", ".csv", ".tsv", ".ini", ".cfg", ".conf",
     ".toml", ".yaml", ".yml", ".json", ".xml", ".html", ".htm", ".css", ".js",
@@ -81,7 +86,7 @@ def register_file_handlers(dp: Dispatcher, ctx: AppContext) -> None:
         ext = Path(filename).suffix.lower()
         mime = (doc.mime_type or "").lower()
 
-        # Картинка-документ → отправляем модели как vision
+        # 1. Картинка-документ → отправляем модели как vision
         if mime in IMAGE_MIMES or ext in IMAGE_EXTS:
             data = target.read_bytes()
             mime_use = mime if mime in IMAGE_MIMES else _ext_to_mime(ext)
@@ -94,30 +99,75 @@ def register_file_handlers(dp: Dispatcher, ctx: AppContext) -> None:
             )
             return
 
-        # Текстовый файл → прикладываем содержимое к промпту
-        if ext in TEXT_EXTS or mime.startswith("text/") or mime in ("application/json", "application/xml"):
+        # 2. Структурированные документы (PDF/DOCX/XLSX/RTF) → извлекаем текст
+        if ext in SUPPORTED_DOC_EXTS:
+            extracted = extract_doc_by_ext(target, ext)
+            if extracted is not None and extracted.text:
+                content = extracted.text
+                truncated = False
+                if len(content) > MAX_EXTRACTED_DOC:
+                    content = content[:MAX_EXTRACTED_DOC]
+                    truncated = True
+                user_q = (
+                    (message.caption or "").strip()
+                    or "Прочитай документ и кратко опиши что в нём."
+                )
+                meta_bits = [extracted.format]
+                if extracted.pages_or_sheets:
+                    unit = "стр" if extracted.format == "pdf" else "блоков"
+                    meta_bits.append(f"{extracted.pages_or_sheets} {unit}")
+                meta_bits.append(f"{target.stat().st_size // 1024} КБ")
+                if truncated:
+                    meta_bits.append("обрезано")
+                meta = ", ".join(meta_bits)
+                prompt = (
+                    f"{user_q}\n\n"
+                    f'<file name="{filename}" meta="{meta}">\n{content}\n</file>'
+                )
+                await _vision_reply(ctx, message, images=[], user_text=prompt)
+                return
+            # Не получилось извлечь — даём понятную ошибку.
+            err = (extracted.error if extracted else "формат не поддержан") or "пусто"
+            await message.answer(
+                f"⚠ Не смог прочитать <code>{html_escape(filename)}</code>: {html_escape(err)}",
+                parse_mode="HTML",
+            )
+            return
+
+        # 3. Текстовый файл → прикладываем содержимое к промпту
+        if (
+            ext in TEXT_EXTS
+            or mime.startswith("text/")
+            or mime in ("application/json", "application/xml")
+        ):
             try:
                 raw = target.read_bytes()
                 if len(raw) > MAX_TEXT_INLINE:
                     raw = raw[:MAX_TEXT_INLINE]
                 text = raw.decode("utf-8", errors="replace")
             except Exception as exc:  # noqa: BLE001
-                await message.answer(f"Сохранил, но прочитать как текст не получилось: {exc}")
+                logger.exception("text file read failed")
+                await message.answer(
+                    f"⚠ Сохранил, но прочитать как текст не получилось: {html_escape(str(exc))}",
+                    parse_mode="HTML",
+                )
                 return
             user_q = (message.caption or "").strip() or "Прочитай файл и кратко опиши что в нём."
             prompt = (
                 f"{user_q}\n\n"
-                f"<file name=\"{filename}\">\n{text}\n</file>"
+                f'<file name="{filename}">\n{text}\n</file>'
             )
             await _vision_reply(ctx, message, images=[], user_text=prompt)
             return
 
-        # Бинарный / неизвестный тип → только сохраняем
+        # 4. Бинарный / неизвестный тип → только сохраняем
         rel = target.relative_to(wd)
         await message.answer(
-            f"Сохранил <code>{rel}</code> ({target.stat().st_size} байт).\n"
-            "Это бинарный/неизвестный формат — модель напрямую его не прочтёт. "
-            "В agent-режиме можно попросить: «прочитай файл …».",
+            f"Сохранил <code>{html_escape(str(rel))}</code> "
+            f"({target.stat().st_size // 1024} КБ).\n"
+            "Не умею читать этот формат напрямую. Поддержаны: PDF, DOCX, XLSX, "
+            "RTF, текстовые файлы (.txt/.md/.py/.json/...), картинки. В "
+            "agent-режиме можно попросить: «прочитай файл ...».",
             parse_mode="HTML",
         )
 
@@ -134,8 +184,11 @@ async def _vision_reply(
     provider_data = await ctx.get_provider_for(message.from_user.id)
     if provider_data is None:
         await message.answer(
-            "Файл/фото получено, но не настроены провайдер/модель/ключ.\n"
-            "Используйте /provider и /setkey, потом отправьте файл снова."
+            "Файл получен и сохранён, но я не могу его обработать — у меня "
+            "нет настроенного LLM-провайдера/ключа.\n\n"
+            "Админу: <code>/provider openai</code> → "
+            "<code>/setkey openai sk-...</code> → <code>/model gpt-5</code>.",
+            parse_mode="HTML",
         )
         return
     provider, model = provider_data

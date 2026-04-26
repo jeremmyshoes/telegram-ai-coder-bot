@@ -7,3 +7,8 @@ anthropic==0.39.0
 python-dotenv==1.0.1
 pydantic==2.9.2
 pydantic-settings==2.6.1
+# извлечение текста из документов (все pure-Python — работают на Termux)
+pypdf==5.1.0
+docx2txt==0.8
+openpyxl==3.1.5
+striprtf==0.0.26
