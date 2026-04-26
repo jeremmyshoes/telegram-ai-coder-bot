@@ -556,40 +556,29 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
         #   2) текущий провайдер пользователя (если не anthropic)
         #   3) openai
         explicit_provider = flags.get("provider")
-        used_provider: str | None = None
-        key_row = None
-        if explicit_provider:
-            if explicit_provider == "anthropic":
-                await message.answer("Anthropic не умеет генерировать картинки. Выберите openai или acedata.")
-                return
-            key_row = await ctx.db.get_key(message.from_user.id, explicit_provider)
-            used_provider = explicit_provider
-            if key_row is None:
+        if explicit_provider == "anthropic":
+            await message.answer(
+                "Anthropic не умеет генерировать картинки. Выберите openai или acedata."
+            )
+            return
+        found = await ctx.find_image_key(message.from_user.id, explicit_provider)
+        if found is None:
+            if explicit_provider:
                 await message.answer(
                     f"Ключ для провайдера <code>{html.escape(explicit_provider)}</code> не найден.\n"
-                    f"Сохраните: <code>/setkey {html.escape(explicit_provider)} ваш-ключ</code>",
+                    f"Админу: <code>/setkey {html.escape(explicit_provider)} ваш-ключ</code>",
                     parse_mode="HTML",
                 )
                 return
-        if key_row is None:
-            user = await ctx.db.ensure_user(message.from_user.id)
-            if user.provider and user.provider != "anthropic":
-                k = await ctx.db.get_key(message.from_user.id, user.provider)
-                if k is not None:
-                    key_row, used_provider = k, user.provider
-        if key_row is None:
-            k = await ctx.db.get_key(message.from_user.id, "openai")
-            if k is not None:
-                key_row, used_provider = k, "openai"
-        if key_row is None or used_provider is None:
             await message.answer(
-                "Нужен OpenAI-совместимый ключ для генерации картинок:\n"
-                "<code>/setkey openai sk-...</code> или "
+                "Нужен OpenAI-совместимый ключ для генерации картинок.\n"
+                "Админу: <code>/setkey openai sk-...</code> или "
                 "<code>/setkey acedata ваш-ключ</code>.\n"
                 "Можно явно: <code>/img -p acedata -m gpt-image-1 кот в очках</code>.",
                 parse_mode="HTML",
             )
             return
+        key_row, used_provider = found
 
         try:
             api_key = ctx.vault.decrypt(key_row.encrypted)
