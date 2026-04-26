@@ -594,12 +594,17 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
         with suppress(Exception):
             await progress.edit_text(f"📚 Читаю {len(results)} источников ({used})…")
 
-        urls = [r.link for r in results if r.link]
+        # Фильтруем результаты с пустым link до вызова fetch_pages, чтобы пары
+        # results↔pages совпадали по длине (zip(strict=True) иначе бросит).
+        results_with_links = [r for r in results if r.link]
+        urls = [r.link for r in results_with_links]
         pages = await fetch_pages(urls, timeout=10.0, max_chars=3500, max_concurrency=5)
 
         # Оставляем только успешно прочитанные (с непустым текстом).
         usable: list[tuple[int, str, str, str]] = []  # (index, title, url, text)
-        for idx, (res, page) in enumerate(zip(results, pages, strict=True), start=1):
+        for idx, (res, page) in enumerate(
+            zip(results_with_links, pages, strict=True), start=1
+        ):
             if page.error or not page.text:
                 continue
             title = page.title or res.title or page.url
