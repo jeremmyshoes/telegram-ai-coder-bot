@@ -1,4 +1,4 @@
-"""Клавиатуры (Reply / Inline) и подписи к командам для меню Telegram."""
+"""Клавиатуры (Inline / Reply) и подписи к командам для меню Telegram."""
 
 from __future__ import annotations
 
@@ -12,32 +12,61 @@ from aiogram.types import (
 
 from bot.providers import PROVIDER_PRESETS
 
-# Текстовые лейблы кнопок главного меню (внизу клавиатуры).
+# Текстовые лейблы кнопок (используются и Reply-клавиатурой, и inline).
 BTN_CHAT = "💬 Чат"
 BTN_IMAGE = "🎨 Картинка"
-BTN_SETTINGS = "⚙️ Настройки"
-BTN_HELP = "ℹ️ Помощь"
+BTN_SEARCH = "🔍 Поиск"
 BTN_STATUS = "📊 Статус"
+BTN_RESET = "🧹 Сброс"
+BTN_HELP = "ℹ️ Помощь"
+BTN_SETTINGS = "⚙️ Настройки"
+BTN_ADMIN = "🛠 Админ"
 
 MAIN_MENU_LABELS = {BTN_CHAT, BTN_IMAGE, BTN_SETTINGS, BTN_HELP, BTN_STATUS}
 
 
+def main_menu_inline_kb(is_admin: bool = False) -> InlineKeyboardMarkup:
+    """Главное inline-меню. Админу показываем доп. кнопку «Админ»."""
+    rows: list[list[InlineKeyboardButton]] = [
+        [
+            InlineKeyboardButton(text=BTN_CHAT, callback_data="act:chat"),
+            InlineKeyboardButton(text=BTN_IMAGE, callback_data="act:image"),
+        ],
+        [
+            InlineKeyboardButton(text=BTN_SEARCH, callback_data="act:search"),
+            InlineKeyboardButton(text=BTN_STATUS, callback_data="act:status"),
+        ],
+        [
+            InlineKeyboardButton(text=BTN_RESET, callback_data="act:reset"),
+            InlineKeyboardButton(text=BTN_HELP, callback_data="act:help"),
+        ],
+    ]
+    if is_admin:
+        rows.append(
+            [InlineKeyboardButton(text=BTN_ADMIN, callback_data="menu:admin")]
+        )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def main_menu_kb() -> ReplyKeyboardMarkup:
-    """Reply-клавиатура внизу чата — основные действия."""
+    """Reply-клавиатура внизу чата (минимальная: чат / картинка / меню).
+
+    Inline-меню — основной способ навигации. Reply-клавиатура оставлена
+    для быстрого доступа к самым частым действиям.
+    """
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=BTN_CHAT), KeyboardButton(text=BTN_IMAGE)],
-            [KeyboardButton(text=BTN_SETTINGS), KeyboardButton(text=BTN_STATUS)],
             [KeyboardButton(text=BTN_HELP)],
         ],
         resize_keyboard=True,
         is_persistent=True,
-        input_field_placeholder="Введите команду или сообщение…",
+        input_field_placeholder="Сообщение или /команда…",
     )
 
 
-def settings_kb() -> InlineKeyboardMarkup:
-    """Inline-меню настроек."""
+def admin_kb() -> InlineKeyboardMarkup:
+    """Админ-меню (видно только админу)."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -49,12 +78,17 @@ def settings_kb() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="🔑 Ключи", callback_data="menu:keys"),
             ],
             [
-                InlineKeyboardButton(text="🧹 Очистить историю", callback_data="menu:reset"),
                 InlineKeyboardButton(text="📁 Workdir", callback_data="menu:workdir"),
+                InlineKeyboardButton(text="🗑 Очистить wd", callback_data="menu:clearwd"),
             ],
-            [InlineKeyboardButton(text="✖️ Закрыть", callback_data="menu:close")],
+            [InlineKeyboardButton(text="⬅ Назад", callback_data="menu:home")],
         ]
     )
+
+
+# Старое имя сохраняем как алиас, чтобы код не сломался.
+def settings_kb() -> InlineKeyboardMarkup:
+    return admin_kb()
 
 
 def providers_kb() -> InlineKeyboardMarkup:
@@ -62,7 +96,6 @@ def providers_kb() -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     cur: list[InlineKeyboardButton] = []
     for preset in PROVIDER_PRESETS.values():
-        # Короткий лейбл для кнопки
         label = preset.id
         cur.append(InlineKeyboardButton(text=label, callback_data=f"prov:{preset.id}"))
         if len(cur) == 2:
@@ -70,7 +103,7 @@ def providers_kb() -> InlineKeyboardMarkup:
             cur = []
     if cur:
         rows.append(cur)
-    rows.append([InlineKeyboardButton(text="✖️ Отмена", callback_data="menu:close")])
+    rows.append([InlineKeyboardButton(text="⬅ Назад", callback_data="menu:admin")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -92,7 +125,7 @@ def models_kb(provider_id: str) -> InlineKeyboardMarkup:
     rows.append(
         [InlineKeyboardButton(text="🔄 Сменить провайдера", callback_data="menu:providers")]
     )
-    rows.append([InlineKeyboardButton(text="✖️ Закрыть", callback_data="menu:close")])
+    rows.append([InlineKeyboardButton(text="⬅ Назад", callback_data="menu:admin")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -106,23 +139,38 @@ def mode_kb(current: str | None) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text=_label("agent", "🤖 agent"), callback_data="mode:agent"),
                 InlineKeyboardButton(text=_label("chat", "💬 chat"), callback_data="mode:chat"),
             ],
-            [InlineKeyboardButton(text="✖️ Закрыть", callback_data="menu:close")],
+            [InlineKeyboardButton(text="⬅ Назад", callback_data="menu:admin")],
         ]
     )
 
 
-# Список команд для меню Telegram (отображается при клике "/")
-BOT_COMMANDS: list[BotCommand] = [
+# --- Списки команд для меню Telegram (всплывающее по «/») ---
+
+# Команды для обычных пользователей (короткий список). Видны всем по умолчанию.
+USER_BOT_COMMANDS: list[BotCommand] = [
+    BotCommand(command="menu", description="Главное меню"),
     BotCommand(command="chat", description="Один вопрос модели (без истории)"),
     BotCommand(command="img", description="Сгенерировать картинку"),
-    BotCommand(command="provider", description="Выбрать провайдера"),
-    BotCommand(command="model", description="Выбрать модель"),
-    BotCommand(command="mode", description="Режим: agent / chat"),
-    BotCommand(command="setkey", description="Сохранить API-ключ"),
-    BotCommand(command="keys", description="Список сохранённых ключей"),
+    BotCommand(command="search", description="Поиск в Google"),
     BotCommand(command="status", description="Текущие настройки"),
     BotCommand(command="reset", description="Очистить историю"),
-    BotCommand(command="workdir", description="Файлы рабочей папки"),
-    BotCommand(command="clearwd", description="Очистить рабочую папку"),
     BotCommand(command="help", description="Справка"),
 ]
+
+# Полный список команд (с админскими) — выставляется только для chat'ов админов
+# через BotCommandScopeChat в bot/__main__.py.
+ADMIN_BOT_COMMANDS: list[BotCommand] = USER_BOT_COMMANDS + [
+    BotCommand(command="provider", description="Выбрать провайдера (admin)"),
+    BotCommand(command="providers", description="Список провайдеров (admin)"),
+    BotCommand(command="model", description="Выбрать модель (admin)"),
+    BotCommand(command="models", description="Список моделей (admin)"),
+    BotCommand(command="mode", description="agent / chat (admin)"),
+    BotCommand(command="setkey", description="Сохранить API-ключ (admin)"),
+    BotCommand(command="keys", description="Список ключей (admin)"),
+    BotCommand(command="delkey", description="Удалить ключ (admin)"),
+    BotCommand(command="workdir", description="Файлы рабочей папки (admin)"),
+    BotCommand(command="clearwd", description="Очистить рабочую папку (admin)"),
+]
+
+# Старое имя — оставляем для совместимости с кодом, который импортирует BOT_COMMANDS.
+BOT_COMMANDS: list[BotCommand] = USER_BOT_COMMANDS

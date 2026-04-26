@@ -105,6 +105,21 @@ def is_allowed(settings: Settings, user_id: int | None) -> bool:
     return settings.is_user_allowed(user_id)
 
 
+def is_admin(settings: Settings, user_id: int | None) -> bool:
+    """Юзер считается админом если:
+    - ADMIN_USER_IDS задан → строго проверяем по этому списку.
+    - ADMIN_USER_IDS пуст → все allowed-юзеры являются админами
+      (поведение по умолчанию, чтобы юзер мог настраивать бота
+      сразу после установки без отдельной правки .env).
+    """
+    if user_id is None:
+        return False
+    admins = settings.admin_user_ids_set
+    if admins:
+        return user_id in admins
+    return settings.is_user_allowed(user_id)
+
+
 async def send_long(message: TgMessage, text: str, *, parse_mode: str | None = None) -> None:
     """Шлёт длинный текст частями (до 4000 символов)."""
     if not text:

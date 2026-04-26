@@ -21,6 +21,7 @@ from aiogram.types import Message as TgMessage
 
 from bot.handlers.common import (
     AppContext,
+    is_admin,
     is_allowed,
     provider_titles,
     send_long,
@@ -31,7 +32,8 @@ from bot.handlers.keyboards import (
     BTN_IMAGE,
     BTN_SETTINGS,
     BTN_STATUS,
-    main_menu_kb,
+    admin_kb,
+    main_menu_inline_kb,
     mode_kb,
     models_kb,
     providers_kb,
@@ -50,56 +52,53 @@ from bot.tools.web_search import (
 logger = logging.getLogger(__name__)
 
 
-HELP_TEXT = """\
-<b>Telegram AI Coder Bot</b> — мульти-провайдерный AI-бот: текст и картинки.
+USER_HELP_TEXT = """\
+<b>🤖 Как пользоваться ботом</b>
 
-<b>Быстрые команды</b>
-/chat &lt;запрос&gt; — one-shot ответ от текущей модели (без истории, без инструментов)
-/search &lt;запрос&gt; — Google web-поиск (нужны GOOGLE_SEARCH_API_KEY/CSE_ID)
-/img &lt;промпт&gt; — сгенерировать картинку (OpenAI / AceData / любой OpenAI-compat)
-   • размер: <code>/img -s 1792x1024 закат над морем</code>
-   • качество (dall-e-3): <code>/img -q hd кот в очках</code>
-   • модель: <code>/img -m gpt-image-1 космонавт</code>
-   • провайдер: <code>/img -p acedata -m gpt-image-1 кот</code>
+Просто пишите сообщения в чат — бот ответит. Или вызовите меню командой /menu.
 
-<b>Настройка</b>
-/start — приветствие
-/help — эта справка
-/providers — список встроенных провайдеров
-/provider &lt;id&gt; — выбрать провайдера (openai, openrouter, anthropic, deepseek, groq, xai, mistral, google, custom)
-/setkey &lt;provider&gt; &lt;api_key&gt; [base_url] — сохранить API-ключ (шифруется на диске)
-/keys — показать какие ключи сохранены (без значений)
-/delkey &lt;provider&gt; — удалить ключ
-/model &lt;model_id&gt; — задать модель (напр. <code>gpt-4o</code>, <code>claude-sonnet-4-5-20250929</code>)
-/models — показать рекомендованные модели для текущего провайдера
-/mode agent|chat — режим обычной переписки (agent с инструментами / chat — без)
+<b>Основные команды</b>
+/chat &lt;вопрос&gt; — один вопрос модели (без истории)
+/img &lt;промпт&gt; — сгенерировать картинку
+/search &lt;запрос&gt; — поиск в Google
 /status — текущие настройки
-/reset — очистить историю разговора
-/workdir — показать содержимое рабочей папки
-/clearwd — очистить рабочую папку
+/reset — очистить историю
+/menu — открыть меню
+/help — эта справка
 
-<b>Использование</b>
-1. Установите ключ: <code>/setkey openai sk-...</code>
-2. Выберите провайдера и модель: <code>/provider openai</code>, <code>/model gpt-4o</code>
-3. Быстрый чат: <code>/chat объясни SOLID за 3 предложения</code>
-4. Картинка: <code>/img киберпанк Москва ночью</code>
-5. Длинный диалог / coder-режим: просто пишите сообщения — в режиме <b>agent</b>
-   модель сама вызовет bash/file-tools (как opencode/Cursor).
+<b>🎨 Картинки (флаги /img)</b>
+• размер: <code>/img -s 1792x1024 закат над морем</code>
+• качество: <code>/img -q high кот в очках</code>
+• модель: <code>/img -m gpt-image-2 космонавт</code>
 
 <b>📷 Фото и файлы</b>
-• Пришлите <b>фото</b> с подписью (или без) — модель «увидит» изображение и ответит.
-• Пришлите <b>картинку как файл</b> (jpg/png/webp/gif) — то же самое.
-• Пришлите <b>текстовый файл</b> (.py/.md/.txt/.json/.log/…) — содержимое уйдёт в промпт,
-  caption = ваш вопрос (по умолчанию: «опиши что в нём»).
-• <b>Бинарные документы</b> просто сохраняются в рабочую папку — агент в режиме
-  <code>agent</code> прочтёт их через <code>read_file</code>.
-• Можно ответить на любое фото командой <code>/chat ваш вопрос</code> — модель
-  получит и фото, и текст.
-
-<i>Vision-capable модели</i>: gpt-4o, gpt-4o-mini, gpt-4.1, claude-3.5-sonnet,
-claude-sonnet-4-5, gemini-1.5-pro, llama-3.2-90b-vision и т.п. Через AceData
-рекомендуем <code>gpt-4o</code> или <code>gpt-4.1</code>.
+• Пришлите фото (с подписью или без) — модель «увидит» и ответит.
+• Картинку как файл (jpg/png/webp/gif) — то же самое.
+• Текстовый файл (.py/.md/.txt/.json/.log/…) — содержимое уйдёт в промпт.
+• Ответьте на фото командой <code>/chat ваш вопрос</code> — модель получит
+  и фото, и текст.
 """
+
+ADMIN_HELP_TEXT = """\
+<b>🛠 Админские команды</b>
+
+/providers — список встроенных провайдеров
+/provider &lt;id&gt; — выбрать провайдера
+/setkey &lt;provider&gt; &lt;api_key&gt; [base_url] — сохранить API-ключ (шифруется)
+/keys — показать какие ключи сохранены
+/delkey &lt;provider&gt; — удалить ключ
+/model &lt;model_id&gt; — задать модель
+/models — список моделей провайдера
+/mode agent|chat — режим работы
+/workdir — файлы рабочей папки
+/clearwd — очистить рабочую папку
+
+Быстрый вход: кнопка «🛠 Админ» в главном меню — открывает все
+эти действия кликами без набора в ручную.
+"""
+
+# Старое имя — для совместимости с кодом, который мог импортировать HELP_TEXT.
+HELP_TEXT = USER_HELP_TEXT
 
 
 # Размеры, которые принимает OpenAI Images API
@@ -143,30 +142,61 @@ def _parse_img_args(args: str) -> tuple[str, dict[str, str]]:
 
 
 def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
+    def _user_id(
+        m: TgMessage | CallbackQuery,
+    ) -> int | None:
+        return m.from_user.id if m.from_user else None
+
+    async def _ensure_admin_msg(message: TgMessage) -> bool:
+        """True если юзер админ. Иначе отправляет отказ."""
+        if not is_admin(ctx.settings, _user_id(message)):
+            await message.answer("🔒 Эта команда доступна только администратору.")
+            return False
+        return True
+
+    async def _ensure_admin_cb(query: CallbackQuery) -> bool:
+        if not is_admin(ctx.settings, _user_id(query)):
+            await query.answer("Только для админа", show_alert=True)
+            return False
+        return True
+
+    def _help_for(user_id: int | None) -> str:
+        if is_admin(ctx.settings, user_id):
+            return USER_HELP_TEXT + "\n" + ADMIN_HELP_TEXT
+        return USER_HELP_TEXT
+
     @dp.message(Command("start"))
     async def cmd_start(message: TgMessage) -> None:
-        if not is_allowed(ctx.settings, message.from_user.id if message.from_user else None):
+        uid = _user_id(message)
+        if not is_allowed(ctx.settings, uid):
             await message.answer("Доступ запрещён. Свяжитесь с администратором бота.")
             return
         await message.answer(
-            "👋 Бот готов к работе. Выберите действие на клавиатуре или используйте команды.",
-            reply_markup=main_menu_kb(),
+            "👋 Привет! Выберите действие кнопкой ниже или просто пишите сообщение — бот ответит.",
+            reply_markup=main_menu_inline_kb(is_admin=is_admin(ctx.settings, uid)),
         )
-        await send_long(message, HELP_TEXT, parse_mode="HTML")
 
     @dp.message(Command("help"))
     async def cmd_help(message: TgMessage) -> None:
-        await send_long(message, HELP_TEXT, parse_mode="HTML")
+        if not is_allowed(ctx.settings, _user_id(message)):
+            return
+        await send_long(message, _help_for(_user_id(message)), parse_mode="HTML")
 
     @dp.message(Command("menu"))
     async def cmd_menu(message: TgMessage) -> None:
-        if not is_allowed(ctx.settings, message.from_user.id if message.from_user else None):
+        uid = _user_id(message)
+        if not is_allowed(ctx.settings, uid):
             return
-        await message.answer("Меню:", reply_markup=main_menu_kb())
+        await message.answer(
+            "Главное меню:",
+            reply_markup=main_menu_inline_kb(is_admin=is_admin(ctx.settings, uid)),
+        )
 
     @dp.message(Command("providers"))
     async def cmd_providers(message: TgMessage) -> None:
-        if not is_allowed(ctx.settings, message.from_user.id if message.from_user else None):
+        if not is_allowed(ctx.settings, _user_id(message)):
+            return
+        if not await _ensure_admin_msg(message):
             return
         await message.answer(
             "<b>Выберите провайдера</b>:\n" + provider_titles(),
@@ -176,7 +206,9 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
 
     @dp.message(Command("provider"))
     async def cmd_provider(message: TgMessage, command: CommandObject) -> None:
-        if not is_allowed(ctx.settings, message.from_user.id if message.from_user else None):
+        if not is_allowed(ctx.settings, _user_id(message)):
+            return
+        if not await _ensure_admin_msg(message):
             return
         provider_id = (command.args or "").strip()
         if not provider_id:
@@ -201,7 +233,9 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
 
     @dp.message(Command("setkey"))
     async def cmd_setkey(message: TgMessage, command: CommandObject) -> None:
-        if not is_allowed(ctx.settings, message.from_user.id if message.from_user else None):
+        if not is_allowed(ctx.settings, _user_id(message)):
+            return
+        if not await _ensure_admin_msg(message):
             return
         if not command.args:
             await message.answer(
@@ -233,7 +267,9 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
 
     @dp.message(Command("keys"))
     async def cmd_keys(message: TgMessage) -> None:
-        if not is_allowed(ctx.settings, message.from_user.id if message.from_user else None):
+        if not is_allowed(ctx.settings, _user_id(message)):
+            return
+        if not await _ensure_admin_msg(message):
             return
         assert message.from_user
         keys = await ctx.db.list_keys(message.from_user.id)
@@ -248,7 +284,9 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
 
     @dp.message(Command("delkey"))
     async def cmd_delkey(message: TgMessage, command: CommandObject) -> None:
-        if not is_allowed(ctx.settings, message.from_user.id if message.from_user else None):
+        if not is_allowed(ctx.settings, _user_id(message)):
+            return
+        if not await _ensure_admin_msg(message):
             return
         provider_id = (command.args or "").strip()
         if not provider_id:
@@ -260,7 +298,9 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
 
     @dp.message(Command("model"))
     async def cmd_model(message: TgMessage, command: CommandObject) -> None:
-        if not is_allowed(ctx.settings, message.from_user.id if message.from_user else None):
+        if not is_allowed(ctx.settings, _user_id(message)):
+            return
+        if not await _ensure_admin_msg(message):
             return
         model = (command.args or "").strip()
         assert message.from_user
@@ -283,7 +323,9 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
 
     @dp.message(Command("models"))
     async def cmd_models(message: TgMessage) -> None:
-        if not is_allowed(ctx.settings, message.from_user.id if message.from_user else None):
+        if not is_allowed(ctx.settings, _user_id(message)):
+            return
+        if not await _ensure_admin_msg(message):
             return
         assert message.from_user
         user = await ctx.db.ensure_user(message.from_user.id)
@@ -321,7 +363,9 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
 
     @dp.message(Command("mode"))
     async def cmd_mode(message: TgMessage, command: CommandObject) -> None:
-        if not is_allowed(ctx.settings, message.from_user.id if message.from_user else None):
+        if not is_allowed(ctx.settings, _user_id(message)):
+            return
+        if not await _ensure_admin_msg(message):
             return
         mode = (command.args or "").strip().lower()
         assert message.from_user
@@ -364,7 +408,9 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
 
     @dp.message(Command("workdir"))
     async def cmd_workdir(message: TgMessage) -> None:
-        if not is_allowed(ctx.settings, message.from_user.id if message.from_user else None):
+        if not is_allowed(ctx.settings, _user_id(message)):
+            return
+        if not await _ensure_admin_msg(message):
             return
         assert message.from_user
         wd = ctx.workdir_for(message.from_user.id)
@@ -378,7 +424,9 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
 
     @dp.message(Command("clearwd"))
     async def cmd_clearwd(message: TgMessage) -> None:
-        if not is_allowed(ctx.settings, message.from_user.id if message.from_user else None):
+        if not is_allowed(ctx.settings, _user_id(message)):
+            return
+        if not await _ensure_admin_msg(message):
             return
         assert message.from_user
         wd = ctx.workdir_for(message.from_user.id)
@@ -711,6 +759,8 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
         if not is_allowed(ctx.settings, query.from_user.id):
             await query.answer("Доступ запрещён", show_alert=True)
             return
+        if not await _ensure_admin_cb(query):
+            return
         provider_id = query.data.split(":", 1)[1] if query.data else ""
         if provider_id not in PROVIDER_PRESETS:
             await query.answer("Неизвестный провайдер", show_alert=True)
@@ -731,6 +781,8 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
         if not is_allowed(ctx.settings, query.from_user.id):
             await query.answer("Доступ запрещён", show_alert=True)
             return
+        if not await _ensure_admin_cb(query):
+            return
         model_id = query.data.split(":", 1)[1] if query.data else ""
         if not model_id:
             await query.answer("Пустая модель", show_alert=True)
@@ -748,6 +800,8 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
         if not is_allowed(ctx.settings, query.from_user.id):
             await query.answer("Доступ запрещён", show_alert=True)
             return
+        if not await _ensure_admin_cb(query):
+            return
         mode = query.data.split(":", 1)[1] if query.data else ""
         if mode not in ("agent", "chat"):
             await query.answer("Неверный режим", show_alert=True)
@@ -761,16 +815,122 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
             )
         await query.answer(f"✓ {mode}")
 
+    @dp.callback_query(F.data.startswith("act:"))
+    async def cb_action(query: CallbackQuery) -> None:
+        """Обработчик кнопок главного инлайн-меню (юзерских)."""
+        if not is_allowed(ctx.settings, query.from_user.id):
+            await query.answer("Доступ запрещён", show_alert=True)
+            return
+        action = query.data.split(":", 1)[1] if query.data else ""
+        uid = query.from_user.id
+        admin = is_admin(ctx.settings, uid)
+
+        if action == "chat":
+            await query.answer()
+            with suppress(Exception):
+                await query.message.edit_text(
+                    "💬 Просто введите вопрос сообщением — бот ответит с учётом истории.\n\n"
+                    "Или <code>/chat ваш вопрос</code> — один вопрос без истории.",
+                    parse_mode="HTML",
+                    reply_markup=main_menu_inline_kb(is_admin=admin),
+                )
+            return
+        if action == "image":
+            await query.answer()
+            with suppress(Exception):
+                await query.message.edit_text(
+                    "🎨 Отправьте: <code>/img промпт</code>\n\n"
+                    "Примеры:\n"
+                    "• <code>/img кот в очках</code>\n"
+                    "• <code>/img -s 1792x1024 закат над морем</code>\n"
+                    "• <code>/img -q high -m gpt-image-2 киберпанк</code>",
+                    parse_mode="HTML",
+                    reply_markup=main_menu_inline_kb(is_admin=admin),
+                )
+            return
+        if action == "search":
+            await query.answer()
+            with suppress(Exception):
+                await query.message.edit_text(
+                    "🔍 Отправьте: <code>/search запрос</code>\n\n"
+                    "Пример: <code>/search новости AI сегодня</code>",
+                    parse_mode="HTML",
+                    reply_markup=main_menu_inline_kb(is_admin=admin),
+                )
+            return
+        if action == "status":
+            user = await ctx.db.ensure_user(uid)
+            keys = await ctx.db.list_keys(uid)
+            text = (
+                "<b>📊 Статус</b>\n"
+                f"Провайдер: <code>{user.provider or '—'}</code>\n"
+                f"Модель: <code>{user.model or '—'}</code>\n"
+                f"Режим: <code>{user.mode}</code>\n"
+                f"Ключей: {len(keys)}"
+            )
+            with suppress(Exception):
+                await query.message.edit_text(
+                    text,
+                    parse_mode="HTML",
+                    reply_markup=main_menu_inline_kb(is_admin=admin),
+                )
+            await query.answer()
+            return
+        if action == "reset":
+            await ctx.db.clear_history(uid)
+            await query.answer("История очищена")
+            with suppress(Exception):
+                await query.message.edit_text(
+                    "🧹 История разговора очищена.",
+                    reply_markup=main_menu_inline_kb(is_admin=admin),
+                )
+            return
+        if action == "help":
+            await query.answer()
+            with suppress(Exception):
+                await query.message.edit_text(
+                    _help_for(uid),
+                    parse_mode="HTML",
+                    reply_markup=main_menu_inline_kb(is_admin=admin),
+                )
+            return
+        await query.answer()
+
     @dp.callback_query(F.data.startswith("menu:"))
     async def cb_menu(query: CallbackQuery) -> None:
         if not is_allowed(ctx.settings, query.from_user.id):
             await query.answer("Доступ запрещён", show_alert=True)
             return
         action = query.data.split(":", 1)[1] if query.data else ""
+        uid = query.from_user.id
+        admin = is_admin(ctx.settings, uid)
+
         if action == "close":
             with suppress(Exception):
                 await query.message.delete()
             await query.answer()
+            return
+        if action == "home":
+            with suppress(Exception):
+                await query.message.edit_text(
+                    "Главное меню:",
+                    reply_markup=main_menu_inline_kb(is_admin=admin),
+                )
+            await query.answer()
+            return
+        if action == "admin":
+            if not await _ensure_admin_cb(query):
+                return
+            with suppress(Exception):
+                await query.message.edit_text(
+                    "<b>🛠 Админ-меню</b>",
+                    parse_mode="HTML",
+                    reply_markup=admin_kb(),
+                )
+            await query.answer()
+            return
+        # Все остальные menu:* — админские.
+        if not await _ensure_admin_cb(query):
             return
         if action == "providers":
             with suppress(Exception):
@@ -831,9 +991,26 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
                 await query.message.edit_text(
                     f"<code>{html.escape(str(wd))}</code>\n<pre>{html.escape(listing)}</pre>",
                     parse_mode="HTML",
-                    reply_markup=settings_kb(),
+                    reply_markup=admin_kb(),
                 )
             await query.answer()
+            return
+        if action == "clearwd":
+            wd = ctx.workdir_for(query.from_user.id)
+            removed = 0
+            for entry in list(wd.iterdir()):
+                with suppress(Exception):
+                    if entry.is_dir():
+                        shutil.rmtree(entry)
+                    else:
+                        entry.unlink()
+                    removed += 1
+            with suppress(Exception):
+                await query.message.edit_text(
+                    f"🗑 Рабочая папка очищена ({removed} элементов).",
+                    reply_markup=admin_kb(),
+                )
+            await query.answer("Очищено")
             return
         await query.answer()
 
