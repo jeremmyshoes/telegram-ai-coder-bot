@@ -20,7 +20,7 @@ from bot.handlers import (
     register_file_handlers,
 )
 from bot.handlers.common import AppContext
-from bot.handlers.keyboards import BOT_COMMANDS
+from bot.handlers.keyboards import ADMIN_BOT_COMMANDS, USER_BOT_COMMANDS
 
 logger = logging.getLogger(__name__)
 
@@ -56,9 +56,19 @@ async def main() -> None:
     try:
         me = await bot.get_me()
         logger.info("Бот @%s готов к работе", me.username)
-        # Регистрируем команды в меню Telegram (отображается при клике "/")
+        # Регистрируем команды в меню Telegram (отображается при клике "/").
+        # Дефолт — короткий список для обычных юзеров. Админам — расширенный
+        # через scope=BotCommandScopeChat.
         try:
-            await bot.set_my_commands(BOT_COMMANDS)
+            from aiogram.types import BotCommandScopeChat
+
+            await bot.set_my_commands(USER_BOT_COMMANDS)
+            for admin_id in settings.admin_user_ids_set:
+                with __import__("contextlib").suppress(Exception):
+                    await bot.set_my_commands(
+                        ADMIN_BOT_COMMANDS,
+                        scope=BotCommandScopeChat(chat_id=admin_id),
+                    )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Не удалось зарегистрировать команды в меню: %s", exc)
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
