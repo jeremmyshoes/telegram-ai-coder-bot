@@ -11,7 +11,7 @@ from aiogram import Dispatcher, F
 from aiogram.types import Message as TgMessage
 
 from bot.agent import Agent, AgentEvent
-from bot.handlers.common import AppContext, is_allowed, send_long
+from bot.handlers.common import AppContext, is_allowed, send_llm_response
 from bot.providers.base import ProviderError
 from bot.tools import build_tool_registry
 from bot.tools.sandbox import build_sandbox
@@ -101,7 +101,7 @@ def register_chat_handlers(dp: Dispatcher, ctx: AppContext) -> None:
         await ctx.save_messages(message.from_user.id, result.new_messages)
 
         final = result.final_text or "(пустой ответ)"
-        await send_long(message, final)
+        await send_llm_response(message, final)
 
     # Гарантия, что мы не блокируем event loop в случае одновременных сообщений
     _ = asyncio  # noqa: SLF001
