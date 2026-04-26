@@ -43,7 +43,7 @@ from bot.providers import PROVIDER_PRESETS, ImageData, Message, ProviderError
 from bot.providers.openai_compat import OpenAICompatProvider
 from bot.tools.web_search import (
     WebSearchError,
-    google_search,
+    web_search,
 )
 from bot.tools.web_search import (
     format_results as format_search_results,
@@ -60,7 +60,7 @@ USER_HELP_TEXT = """\
 <b>Основные команды</b>
 /chat &lt;вопрос&gt; — один вопрос модели (без истории)
 /img &lt;промпт&gt; — сгенерировать картинку
-/search &lt;запрос&gt; — поиск в Google
+/search &lt;запрос&gt; — веб-поиск (DuckDuckGo)
 /status — текущие настройки
 /reset — очистить историю
 /menu — открыть меню
@@ -504,28 +504,18 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
         if not query:
             await message.answer(
                 "Использование: <code>/search ваш запрос</code>\n"
-                "Ищет через Google Custom Search API.",
-                parse_mode="HTML",
-            )
-            return
-        if not (
-            ctx.settings.google_search_api_key and ctx.settings.google_search_cse_id
-        ):
-            await message.answer(
-                "Web-поиск не настроен.\n"
-                "Добавьте в <code>.env</code>:\n"
-                "<code>GOOGLE_SEARCH_API_KEY=…</code>\n"
-                "<code>GOOGLE_SEARCH_CSE_ID=…</code>\n"
-                "и перезапустите бота. Подробнее: https://developers.google.com/custom-search/v1/overview",
+                "По умолчанию использует DuckDuckGo (без ключей). Если в "
+                "<code>.env</code> заданы <code>GOOGLE_SEARCH_API_KEY</code> + "
+                "<code>GOOGLE_SEARCH_CSE_ID</code> — будет использован Google.",
                 parse_mode="HTML",
             )
             return
         thinking = await message.answer("🔎 Ищу…")
         try:
-            results = await google_search(
+            results, used = await web_search(
                 query,
-                api_key=ctx.settings.google_search_api_key,
-                cse_id=ctx.settings.google_search_cse_id,
+                google_api_key=ctx.settings.google_search_api_key,
+                google_cse_id=ctx.settings.google_search_cse_id,
                 num_results=5,
             )
         except WebSearchError as exc:
@@ -535,7 +525,10 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
             return
         with suppress(Exception):
             await thinking.delete()
-        await send_long(message, format_search_results(results))
+        # Без HTML-разметки — результаты содержат произвольные строки/URL, которые
+        # ломали бы Telegram HTML-парсер при отправке как parse_mode='HTML'.
+        header = f"(via {used})\n\n"
+        await send_long(message, header + format_search_results(results))
 
     @dp.message(Command("img"))
     async def cmd_img(message: TgMessage, command: CommandObject) -> None:
@@ -563,40 +556,29 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
         #   2) текущий провайдер пользователя (если не anthropic)
         #   3) openai
         explicit_provider = flags.get("provider")
-        used_provider: str | None = None
-        key_row = None
-        if explicit_provider:
-            if explicit_provider == "anthropic":
-                await message.answer("Anthropic не умеет генерировать картинки. Выберите openai или acedata.")
-                return
-            key_row = await ctx.db.get_key(message.from_user.id, explicit_provider)
-            used_provider = explicit_provider
-            if key_row is None:
+        if explicit_provider == "anthropic":
+            await message.answer(
+                "Anthropic не умеет генерировать картинки. Выберите openai или acedata."
+            )
+            return
+        found = await ctx.find_image_key(message.from_user.id, explicit_provider)
+        if found is None:
+            if explicit_provider:
                 await message.answer(
                     f"Ключ для провайдера <code>{html.escape(explicit_provider)}</code> не найден.\n"
-                    f"Сохраните: <code>/setkey {html.escape(explicit_provider)} ваш-ключ</code>",
+                    f"Админу: <code>/setkey {html.escape(explicit_provider)} ваш-ключ</code>",
                     parse_mode="HTML",
                 )
                 return
-        if key_row is None:
-            user = await ctx.db.ensure_user(message.from_user.id)
-            if user.provider and user.provider != "anthropic":
-                k = await ctx.db.get_key(message.from_user.id, user.provider)
-                if k is not None:
-                    key_row, used_provider = k, user.provider
-        if key_row is None:
-            k = await ctx.db.get_key(message.from_user.id, "openai")
-            if k is not None:
-                key_row, used_provider = k, "openai"
-        if key_row is None or used_provider is None:
             await message.answer(
-                "Нужен OpenAI-совместимый ключ для генерации картинок:\n"
-                "<code>/setkey openai sk-...</code> или "
+                "Нужен OpenAI-совместимый ключ для генерации картинок.\n"
+                "Админу: <code>/setkey openai sk-...</code> или "
                 "<code>/setkey acedata ваш-ключ</code>.\n"
                 "Можно явно: <code>/img -p acedata -m gpt-image-1 кот в очках</code>.",
                 parse_mode="HTML",
             )
             return
+        key_row, used_provider = found
 
         try:
             api_key = ctx.vault.decrypt(key_row.encrypted)
@@ -722,11 +704,17 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
     async def btn_help(message: TgMessage) -> None:
         if not is_allowed(ctx.settings, message.from_user.id if message.from_user else None):
             return
-        await send_long(message, HELP_TEXT, parse_mode="HTML")
+        await send_long(message, _help_for(_user_id(message)), parse_mode="HTML")
 
     @dp.message(F.text == BTN_SETTINGS)
     async def btn_settings(message: TgMessage) -> None:
+        # Кнопка остаётся для юзеров со старой reply-клавиатурой в кэше Telegram.
+        # admin_kb/settings_kb показываем только админам — без admin-проверки
+        # обычный юзер увидел бы админские кнопки (даже если callback'и потом
+        # отказывают).
         if not is_allowed(ctx.settings, message.from_user.id if message.from_user else None):
+            return
+        if not await _ensure_admin_msg(message):
             return
         await message.answer("⚙️ Настройки:", reply_markup=settings_kb())
 

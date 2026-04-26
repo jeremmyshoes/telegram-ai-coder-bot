@@ -26,6 +26,11 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_LIMIT = 4000  # запас от 4096
 
+# Провайдеры с поддержкой OpenAI Images API (`/v1/images/generations`).
+# Используется в find_image_key(), чтобы не пытаться генерить картинки на
+# чисто-чат провайдерах вроде groq/cerebras/deepseek.
+IMAGE_CAPABLE_PROVIDERS: tuple[str, ...] = ("openai", "acedata", "custom")
+
 
 class AppContext:
     """Контейнер общих зависимостей, прокидываемый в handlers."""
@@ -40,8 +45,12 @@ class AppContext:
         wd.mkdir(parents=True, exist_ok=True)
         return wd
 
-    async def get_provider_for(self, user_id: int) -> tuple[LLMProvider, str] | None:
-        """Возвращает (provider, model) или None если ключ/модель не настроены."""
+    async def _build_provider_for_user(
+        self, user_id: int
+    ) -> tuple[LLMProvider, str] | None:
+        """Строит (provider, model) только из персональных настроек user_id.
+        Возвращает None если у пользователя нет своего provider/model или ключа.
+        """
         user = await self.db.ensure_user(user_id)
         if not user.provider or not user.model:
             return None
@@ -58,6 +67,83 @@ class AppContext:
             base_url=key_row.base_url,
         )
         return provider, user.model
+
+    def _fallback_admin_ids(self) -> list[int]:
+        """Список user_id, чьи настройки используются как «общие».
+
+        Логика: командные настройки (provider/key/model) теперь меняет только
+        админ. Чтобы non-admin (например, сестра) тоже мог пользоваться ботом,
+        при отсутствии собственного ключа/модели подставляются настройки
+        админа.
+        """
+        admins = self.settings.admin_user_ids_set
+        if admins:
+            return sorted(admins)
+        # ADMIN_USER_IDS не задан → все allowed-юзеры считаются админами.
+        # Берём первого по порядку из ALLOWED_USER_IDS как «главного».
+        return sorted(self.settings.allowed_user_ids_set)
+
+    async def get_provider_for(self, user_id: int) -> tuple[LLMProvider, str] | None:
+        """Возвращает (provider, model) для запроса от user_id.
+
+        Сначала пробуем персональные настройки. Если их нет — fallback
+        на настройки администратора, чтобы обычные allowed-юзеры могли
+        пользоваться ботом без собственного /setkey.
+        """
+        own = await self._build_provider_for_user(user_id)
+        if own is not None:
+            return own
+        for admin_id in self._fallback_admin_ids():
+            if admin_id == user_id:
+                continue
+            shared = await self._build_provider_for_user(admin_id)
+            if shared is not None:
+                return shared
+        return None
+
+    async def find_image_key(
+        self, user_id: int, explicit_provider: str | None = None
+    ) -> tuple[Any, str] | None:
+        """Подбирает (key_row, provider_name) для команды /img.
+
+        Сначала смотрит персональные ключи user_id, потом — ключи
+        администратора (fallback для не-админов).
+
+        При отсутствии явного `-p`: предпочитаем провайдеров, у которых
+        реально есть Images API (openai, acedata). Текущий провайдер юзера
+        используется только если он входит в этот список — иначе мы бы
+        ходили в `/v1/images/generations` на Groq/Deepseek/Cerebras и
+        получали 404. Anthropic тоже исключён.
+
+        Возвращает None если нигде ничего не нашлось.
+        """
+        candidates: list[int] = [user_id]
+        for admin_id in self._fallback_admin_ids():
+            if admin_id != user_id and admin_id not in candidates:
+                candidates.append(admin_id)
+
+        for uid in candidates:
+            if explicit_provider:
+                if explicit_provider == "anthropic":
+                    return None
+                key_row = await self.db.get_key(uid, explicit_provider)
+                if key_row is not None:
+                    return key_row, explicit_provider
+                continue
+            user = await self.db.ensure_user(uid)
+            # 1. Текущий провайдер юзера, если он умеет картинки.
+            if user.provider in IMAGE_CAPABLE_PROVIDERS:
+                k = await self.db.get_key(uid, user.provider)
+                if k is not None:
+                    return k, user.provider
+            # 2. Прямой перебор известных image-capable провайдеров.
+            for prov in IMAGE_CAPABLE_PROVIDERS:
+                if prov == user.provider:
+                    continue  # уже пробовали выше
+                k = await self.db.get_key(uid, prov)
+                if k is not None:
+                    return k, prov
+        return None
 
     async def load_history(self, user_id: int) -> list[Message]:
         rows = await self.db.get_history(user_id, limit=self.settings.max_history_messages)

@@ -151,7 +151,7 @@ USER_BOT_COMMANDS: list[BotCommand] = [
     BotCommand(command="menu", description="Главное меню"),
     BotCommand(command="chat", description="Один вопрос модели (без истории)"),
     BotCommand(command="img", description="Сгенерировать картинку"),
-    BotCommand(command="search", description="Поиск в Google"),
+    BotCommand(command="search", description="Веб-поиск (DuckDuckGo)"),
     BotCommand(command="status", description="Текущие настройки"),
     BotCommand(command="reset", description="Очистить историю"),
     BotCommand(command="help", description="Справка"),
