@@ -64,6 +64,16 @@ class Settings(BaseSettings):
         description="ID поискового движка из programmablesearchengine.google.com.",
     )
 
+    log_chat_id: int = Field(
+        default=0,
+        description=(
+            "Telegram chat_id (канал/группа/личка) куда бот шлёт копии всех "
+            "взаимодействий: входящие от юзеров, ответы бота, админские "
+            "события. 0 = логирование выключено. Канал = отрицательный id "
+            "вида -1001234567890; бот должен быть админом канала."
+        ),
+    )
+
     log_level: str = "INFO"
 
     @property
