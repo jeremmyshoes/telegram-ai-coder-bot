@@ -302,7 +302,7 @@ async def _vision_reply(
         return
 
     with suppress(Exception):
-        await progress.edit_text("\n".join(log_lines[-12:])[-3500:] or "Готово.")
+        await progress.delete()
 
     await ctx.save_messages(message.from_user.id, result.new_messages)
     await send_llm_response(message, result.final_text or "(пустой ответ)")

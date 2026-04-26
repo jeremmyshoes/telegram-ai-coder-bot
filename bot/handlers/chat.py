@@ -103,9 +103,10 @@ def register_chat_handlers(dp: Dispatcher, ctx: AppContext) -> None:
             await progress.edit_text(f"⚠ Ошибка: {exc}")
             return
 
-        # Финальный лог
+        # Прогресс больше не нужен — удаляем сообщение, чтобы «💭 Итерация 1…»
+        # не висело в чате после готового ответа.
         with suppress(Exception):
-            await progress.edit_text("\n".join(log_lines[-12:])[-3500:] or "Готово.")
+            await progress.delete()
 
         await ctx.save_messages(message.from_user.id, result.new_messages)
 
