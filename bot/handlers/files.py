@@ -23,7 +23,7 @@ from aiogram.types import Document, PhotoSize
 from aiogram.types import Message as TgMessage
 
 from bot.agent import Agent, AgentEvent
-from bot.handlers.common import AppContext, is_allowed, send_long
+from bot.handlers.common import AppContext, is_allowed, send_llm_response
 from bot.providers.base import ImageData, ProviderError
 from bot.tools import build_tool_registry
 from bot.tools.sandbox import build_sandbox
@@ -201,7 +201,7 @@ async def _vision_reply(
         await progress.edit_text("\n".join(log_lines[-12:])[-3500:] or "Готово.")
 
     await ctx.save_messages(message.from_user.id, result.new_messages)
-    await send_long(message, result.final_text or "(пустой ответ)")
+    await send_llm_response(message, result.final_text or "(пустой ответ)")
 
 
 def _ext_to_mime(ext: str) -> str:

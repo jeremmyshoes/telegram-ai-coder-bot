@@ -24,6 +24,7 @@ from bot.handlers.common import (
     is_admin,
     is_allowed,
     provider_titles,
+    send_llm_response,
     send_long,
 )
 from bot.handlers.keyboards import (
@@ -494,7 +495,7 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
             await thinking.delete()
 
         text = (response.content or "").strip() or "(пустой ответ)"
-        await send_long(message, text)
+        await send_llm_response(message, text)
 
     @dp.message(Command("search"))
     async def cmd_search(message: TgMessage, command: CommandObject) -> None:

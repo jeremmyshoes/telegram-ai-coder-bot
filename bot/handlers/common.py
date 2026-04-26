@@ -229,6 +229,50 @@ async def send_long(message: TgMessage, text: str, *, parse_mode: str | None = N
             await message.answer(chunk)
 
 
+def _split_for_telegram(text: str) -> list[str]:
+    """Режет текст на куски ≤ TELEGRAM_LIMIT символов, по \\n когда возможно."""
+    chunks: list[str] = []
+    remaining = text
+    while remaining:
+        if len(remaining) <= TELEGRAM_LIMIT:
+            chunks.append(remaining)
+            break
+        cut = remaining.rfind("\n", 0, TELEGRAM_LIMIT)
+        if cut <= 0:
+            cut = TELEGRAM_LIMIT
+        chunks.append(remaining[:cut])
+        remaining = remaining[cut:].lstrip("\n")
+    return chunks
+
+
+async def send_llm_response(message: TgMessage, text: str) -> None:
+    """Отправляет ответ LLM, конвертируя Markdown в Telegram HTML.
+
+    Большинство моделей возвращают `**жирный**`, `*курсив*`, ``` `code` ```,
+    тройные бэктики и т.п. — Telegram без parse_mode эту разметку не понимает,
+    поэтому пользователь видит сырые звёздочки. Здесь делаем безопасную
+    конвертацию и шлём с parse_mode='HTML'. На случай если конкретный chunk
+    после конвертации даст невалидный HTML (Telegram очень капризен), для
+    этого chunk'а шлём оригинальный markdown-текст без parse_mode.
+    """
+    from bot.handlers.markdown import md_to_telegram_html
+
+    if not text:
+        return
+
+    raw_chunks = _split_for_telegram(text)
+    for raw in raw_chunks:
+        html = md_to_telegram_html(raw)
+        try:
+            await message.answer(html, parse_mode="HTML")
+        except Exception:  # noqa: BLE001
+            # HTML-парсер Telegram отказался — шлём исходный markdown-кусок.
+            try:
+                await message.answer(raw)
+            except Exception:  # noqa: BLE001
+                logger.exception("send_llm_response failed for chunk len=%d", len(raw))
+
+
 def provider_titles() -> str:
     out = []
     for p in PROVIDER_PRESETS.values():
