@@ -18,6 +18,7 @@ from bot.handlers import (
     register_chat_handlers,
     register_command_handlers,
     register_file_handlers,
+    register_yt_handlers,
 )
 from bot.handlers.common import AppContext
 from bot.handlers.keyboards import ADMIN_BOT_COMMANDS, USER_BOT_COMMANDS
@@ -48,7 +49,12 @@ async def main() -> None:
     )
     dp = Dispatcher()
 
-    # Порядок важен: сначала команды (чтобы не перехватывал общий chat handler), потом файлы, потом chat
+    # Порядок важен. В aiogram 3 хендлеры проверяются в порядке регистрации
+    # — первое совпадение выигрывает. /yt должен быть зарегистрирован ДО
+    # register_command_handlers, потому что внутри последнего в самом
+    # конце есть catch-all `F.text.startswith("/")`, который иначе
+    # перехватит /yt и ответит «Неизвестная команда».
+    register_yt_handlers(dp, ctx)
     register_command_handlers(dp, ctx)
     register_file_handlers(dp, ctx)
     register_chat_handlers(dp, ctx)

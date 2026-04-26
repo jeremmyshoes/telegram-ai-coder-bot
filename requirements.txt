@@ -16,3 +16,6 @@ striprtf==0.0.26
 # pypdfium2 поставляется как self-contained wheel с PDFium-бинарём,
 # работает на linux-aarch64 (Termux) без сборки из исходников.
 pypdfium2==4.30.0
+# YouTube → транскрипт через /yt: yt-dlp качает аудио без ffmpeg
+# (выбираем самый низкий битрейт, чтобы влезть в 25МБ OpenAI API).
+yt-dlp==2024.12.13
