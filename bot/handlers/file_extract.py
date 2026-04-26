@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import re
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -106,12 +107,24 @@ def extract_xlsx(path: Path, *, max_rows_per_sheet: int = 200) -> ExtractedDoc:
         return ExtractedDoc("", format="xlsx", error=f"openpyxl не установлен: {exc}")
     try:
         wb = load_workbook(str(path), read_only=True, data_only=True)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("XLSX open failed")
+        return ExtractedDoc("", format="xlsx", error=f"не смог открыть .xlsx: {exc}")
+    # Гарантируем закрытие воркбука даже при ошибке итерации — иначе
+    # openpyxl в read_only режиме держит ZIP-handle открытым.
+    try:
         parts: list[str] = []
         for ws in wb.worksheets:
             rows: list[str] = [f"--- Лист «{ws.title}» ---"]
             for r_idx, row in enumerate(ws.iter_rows(values_only=True), start=1):
                 if r_idx > max_rows_per_sheet:
-                    rows.append(f"... (ещё ~{ws.max_row - max_rows_per_sheet} строк)")
+                    # ws.max_row может быть None в read_only режиме,
+                    # если в файле нет dimension-метаданных.
+                    remaining = (ws.max_row or 0) - max_rows_per_sheet
+                    if remaining > 0:
+                        rows.append(f"... (ещё ~{remaining} строк)")
+                    else:
+                        rows.append("... (обрезано)")
                     break
                 cells = [
                     "" if v is None else str(v).replace("\n", " ").replace("\t", " ")
@@ -122,7 +135,6 @@ def extract_xlsx(path: Path, *, max_rows_per_sheet: int = 200) -> ExtractedDoc:
                     continue
                 rows.append("\t".join(cells))
             parts.append("\n".join(rows))
-        wb.close()
         text = "\n\n".join(parts).strip()
         if not text:
             return ExtractedDoc("", format="xlsx", error="книга пуста")
@@ -130,6 +142,9 @@ def extract_xlsx(path: Path, *, max_rows_per_sheet: int = 200) -> ExtractedDoc:
     except Exception as exc:  # noqa: BLE001
         logger.exception("XLSX extract failed")
         return ExtractedDoc("", format="xlsx", error=f"не смог прочитать .xlsx: {exc}")
+    finally:
+        with suppress(Exception):
+            wb.close()
 
 
 def extract_rtf(path: Path) -> ExtractedDoc:
