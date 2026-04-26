@@ -42,6 +42,7 @@ from bot.handlers.keyboards import (
 )
 from bot.providers import PROVIDER_PRESETS, ImageData, Message, ProviderError
 from bot.providers.openai_compat import OpenAICompatProvider
+from bot.tools.url_fetch import fetch_pages
 from bot.tools.web_search import (
     WebSearchError,
     web_search,
@@ -61,7 +62,8 @@ USER_HELP_TEXT = """\
 <b>Основные команды</b>
 /chat &lt;вопрос&gt; — один вопрос модели (без истории)
 /img &lt;промпт&gt; — сгенерировать картинку
-/search &lt;запрос&gt; — веб-поиск (DuckDuckGo)
+/search &lt;вопрос&gt; — умный веб-поиск со ссылками [1][2] (как Perplexity)
+/search -raw &lt;запрос&gt; — сырой список ссылок без LLM-синтеза
 /status — текущие настройки
 /reset — очистить историю
 /menu — открыть меню
@@ -501,35 +503,205 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
     async def cmd_search(message: TgMessage, command: CommandObject) -> None:
         if not is_allowed(ctx.settings, message.from_user.id if message.from_user else None):
             return
-        query = (command.args or "").strip()
-        if not query:
+        raw_query = (command.args or "").strip()
+        # Флаг -raw в начале запроса возвращает старое поведение: просто список ссылок,
+        # без LLM-синтеза. Полезно если у юзера нет openai-ключа или он просто хочет
+        # сырую выдачу.
+        raw_mode = False
+        if raw_query.startswith("-raw "):
+            raw_mode = True
+            raw_query = raw_query[len("-raw "):].strip()
+        elif raw_query == "-raw":
+            raw_query = ""
+
+        if not raw_query:
             await message.answer(
-                "Использование: <code>/search ваш запрос</code>\n"
-                "По умолчанию использует DuckDuckGo (без ключей). Если в "
-                "<code>.env</code> заданы <code>GOOGLE_SEARCH_API_KEY</code> + "
-                "<code>GOOGLE_SEARCH_CSE_ID</code> — будет использован Google.",
+                "Использование: <code>/search ваш вопрос</code> — perplexity-режим: "
+                "бот ищет в интернете, читает источники и пишет связный ответ со "
+                "ссылками <code>[1]</code>, <code>[2]</code>, …\n\n"
+                "<code>/search -raw запрос</code> — старый режим: только список "
+                "ссылок без LLM-синтеза.",
                 parse_mode="HTML",
             )
             return
-        thinking = await message.answer("🔎 Ищу…")
+        query = raw_query
+        assert message.from_user
+
+        # === Сырой режим — просто выдача ссылок (как раньше). ============
+        if raw_mode:
+            thinking = await message.answer("🔎 Ищу…")
+            try:
+                results, used = await web_search(
+                    query,
+                    google_api_key=ctx.settings.google_search_api_key,
+                    google_cse_id=ctx.settings.google_search_cse_id,
+                    num_results=5,
+                )
+            except WebSearchError as exc:
+                with suppress(Exception):
+                    await thinking.delete()
+                await message.answer(
+                    f"⚠ Ошибка поиска: {html.escape(str(exc))}", parse_mode="HTML"
+                )
+                return
+            with suppress(Exception):
+                await thinking.delete()
+            header = f"(via {used})\n\n"
+            await send_long(message, header + format_search_results(results))
+            return
+
+        # === Perplexity-режим: search → fetch → LLM synth с цитатами. =====
+        # 1. Найдём openai-ключ заранее, чтобы не качать страницы зря,
+        #    если ключа нет.
+        key_pair = await ctx.find_openai_key(message.from_user.id)
+        if key_pair is None:
+            await message.answer(
+                "Для perplexity-режима нужен OpenAI-ключ (модель "
+                f"<code>{html.escape(ctx.settings.search_synth_model)}</code>).\n"
+                "Админу: <code>/setkey openai sk-...</code>\n\n"
+                "Либо используйте <code>/search -raw запрос</code> — выдаст "
+                "сырые ссылки без LLM-синтеза.",
+                parse_mode="HTML",
+            )
+            return
+        api_key, base_url = key_pair
+
+        progress = await message.answer("🔎 Ищу источники…")
+
+        # 2. Поиск.
         try:
             results, used = await web_search(
                 query,
                 google_api_key=ctx.settings.google_search_api_key,
                 google_cse_id=ctx.settings.google_search_cse_id,
-                num_results=5,
+                num_results=6,
             )
         except WebSearchError as exc:
             with suppress(Exception):
-                await thinking.delete()
-            await message.answer(f"⚠ Ошибка поиска: {html.escape(str(exc))}", parse_mode="HTML")
+                await progress.delete()
+            await message.answer(
+                f"⚠ Ошибка поиска: {html.escape(str(exc))}", parse_mode="HTML"
+            )
             return
+
+        if not results:
+            with suppress(Exception):
+                await progress.delete()
+            await message.answer("Ничего не нашёл по этому запросу.")
+            return
+
+        # 3. Скачиваем содержимое топ-страниц параллельно.
         with suppress(Exception):
-            await thinking.delete()
-        # Без HTML-разметки — результаты содержат произвольные строки/URL, которые
-        # ломали бы Telegram HTML-парсер при отправке как parse_mode='HTML'.
-        header = f"(via {used})\n\n"
-        await send_long(message, header + format_search_results(results))
+            await progress.edit_text(f"📚 Читаю {len(results)} источников ({used})…")
+
+        urls = [r.link for r in results if r.link]
+        pages = await fetch_pages(urls, timeout=10.0, max_chars=3500, max_concurrency=5)
+
+        # Оставляем только успешно прочитанные (с непустым текстом).
+        usable: list[tuple[int, str, str, str]] = []  # (index, title, url, text)
+        for idx, (res, page) in enumerate(zip(results, pages, strict=True), start=1):
+            if page.error or not page.text:
+                continue
+            title = page.title or res.title or page.url
+            usable.append((idx, title, page.url, page.text))
+            if len(usable) >= 5:
+                break
+
+        if not usable:
+            # Все источники не открылись — fallback на снippet'ы из выдачи.
+            with suppress(Exception):
+                await progress.edit_text("⚠ Не удалось скачать источники, использую сниппеты…")
+            for idx, res in enumerate(results[:5], start=1):
+                if not res.snippet:
+                    continue
+                usable.append((idx, res.title or res.link, res.link, res.snippet))
+            if not usable:
+                with suppress(Exception):
+                    await progress.delete()
+                await message.answer("Источники недоступны, не могу ответить.")
+                return
+
+        # 4. Собираем контекст для LLM.
+        context_blocks: list[str] = []
+        cited_sources: list[tuple[int, str, str]] = []  # (renumbered, title, url)
+        for new_idx, (_orig_idx, title, url, text) in enumerate(usable, start=1):
+            context_blocks.append(
+                f"[{new_idx}] {title}\nURL: {url}\n{text}"
+            )
+            cited_sources.append((new_idx, title, url))
+
+        sources_context = "\n\n---\n\n".join(context_blocks)
+
+        system_prompt = (
+            "Ты ассистент в стиле Perplexity. Тебе дан вопрос пользователя и "
+            "несколько веб-источников, пронумерованных [1], [2], …\n\n"
+            "Правила:\n"
+            "1. Ответь на вопрос на том же языке, что и вопрос.\n"
+            "2. Используй только информацию из приведённых источников. Если "
+            "информации недостаточно — скажи это прямо.\n"
+            "3. После каждого утверждения ставь номер(а) источника в "
+            "квадратных скобках, например: «Python — динамически "
+            "типизированный язык [1][3].»\n"
+            "4. Будь краток и по делу. Markdown допустим (жирный, списки).\n"
+            "5. НЕ выдумывай источников и не добавляй ссылок, которых нет в "
+            "списке источников ниже.\n"
+            "6. НЕ добавляй сам список источников в конце ответа — его "
+            "пришлёт интерфейс отдельно."
+        )
+        user_prompt = (
+            f"Вопрос: {query}\n\nИсточники:\n\n{sources_context}\n\n"
+            "Дай краткий точный ответ с цитатами [N]."
+        )
+
+        # 5. Зовём OpenAI gpt-5.
+        with suppress(Exception):
+            await progress.edit_text("🧠 Синтезирую ответ…")
+
+        synth_provider = OpenAICompatProvider(
+            name="openai",
+            api_key=api_key,
+            base_url=base_url,
+        )
+        synth_model = ctx.settings.search_synth_model
+        try:
+            response = await synth_provider.complete(
+                messages=[
+                    Message(role="system", content=system_prompt),
+                    Message(role="user", content=user_prompt),
+                ],
+                model=synth_model,
+            )
+        except ProviderError as exc:
+            with suppress(Exception):
+                await progress.delete()
+            await message.answer(
+                f"⚠ Ошибка модели <code>{html.escape(synth_model)}</code>: "
+                f"{html.escape(str(exc))}",
+                parse_mode="HTML",
+            )
+            return
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("/search synth failed")
+            with suppress(Exception):
+                await progress.delete()
+            await message.answer(f"⚠ Ошибка: {exc}")
+            return
+
+        with suppress(Exception):
+            await progress.delete()
+
+        answer = (response.content or "").strip() or "(модель вернула пустой ответ)"
+
+        # 6. Шлём ответ + источники.
+        await send_llm_response(message, answer)
+
+        # Отдельным сообщением — пронумерованный список источников. Делаем
+        # plain-text чтобы не возиться с экранированием URL и заголовков.
+        src_lines = [f"📎 Источники (via {used}):"]
+        for n, title, url in cited_sources:
+            short_title = title if len(title) <= 90 else title[:87] + "…"
+            src_lines.append(f"[{n}] {short_title}\n    {url}")
+        await message.answer("\n".join(src_lines), disable_web_page_preview=True)
 
     @dp.message(Command("img"))
     async def cmd_img(message: TgMessage, command: CommandObject) -> None:
