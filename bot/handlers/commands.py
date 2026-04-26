@@ -5,7 +5,9 @@ from __future__ import annotations
 import html
 import io
 import logging
+import math
 import shutil
+import time
 from contextlib import suppress
 
 from aiogram import Bot, Dispatcher, F
@@ -103,7 +105,22 @@ claude-sonnet-4-5, gemini-1.5-pro, llama-3.2-90b-vision и т.п. Через Ace
 # Размеры, которые принимает OpenAI Images API
 _DALLE3_SIZES = {"1024x1024", "1024x1792", "1792x1024"}
 _DALLE2_SIZES = {"256x256", "512x512", "1024x1024"}
-_GPT_IMAGE_SIZES = {"1024x1024", "1024x1536", "1536x1024", "auto"}
+# gpt-image-* развивается, поэтому строгий whitelist убрали — валидация только
+# для dall-e-*. gpt-image-* размеры пробрасываем как есть (OpenAI вернёт ошибку,
+# если что-то не так).
+
+
+def _aspect_ratio(size: str) -> str:
+    """\"1024x1536\" -> \"2:3\"; \"auto\" / неразбираемое -> \"\"."""
+    try:
+        w_s, h_s = size.lower().split("x")
+        w, h = int(w_s), int(h_s)
+    except (ValueError, AttributeError):
+        return ""
+    if w <= 0 or h <= 0:
+        return ""
+    g = math.gcd(w, h)
+    return f"{w // g}:{h // g}"
 
 
 def _parse_img_args(args: str) -> tuple[str, dict[str, str]]:
@@ -557,16 +574,13 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
         size = flags.get("size", ctx.settings.image_size)
         quality = flags.get("quality") or (ctx.settings.image_quality or None)
 
-        # Лёгкая валидация
-        valid_sizes = (
-            _DALLE3_SIZES
-            if model.startswith("dall-e-3")
-            else _DALLE2_SIZES
-            if model.startswith("dall-e-2")
-            else _GPT_IMAGE_SIZES
-            if model.startswith("gpt-image")
-            else None
-        )
+        # Лёгкая валидация — только для dall-e-*. gpt-image-* пропускаем, т.к. лайнап
+        # моделей и поддерживаемых размеров расширяется (gpt-image-2 и пр.).
+        valid_sizes: set[str] | None = None
+        if model.startswith("dall-e-3"):
+            valid_sizes = _DALLE3_SIZES
+        elif model.startswith("dall-e-2"):
+            valid_sizes = _DALLE2_SIZES
         if valid_sizes and size not in valid_sizes:
             await message.answer(
                 f"Размер <code>{size}</code> не поддержан для модели "
@@ -577,6 +591,7 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
             return
 
         progress = await message.answer(f"🎨 Генерирую картинку ({model}, {size})…")
+        t0 = time.monotonic()
         try:
             images = await provider.generate_image(
                 prompt=prompt,
@@ -595,17 +610,36 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
                 await progress.delete()
             await message.answer(f"⚠ Ошибка: {exc}")
             return
+        elapsed = time.monotonic() - t0
 
         with suppress(Exception):
             await progress.delete()
 
+        ratio = _aspect_ratio(size)
+        ratio_part = f"{ratio} ({size})" if ratio else size
+        meta_bits = [model, ratio_part]
+        if quality:
+            meta_bits.append(quality)
+        meta_bits.append("png")
+        meta_line = " | ".join(meta_bits)
+
         for idx, img in enumerate(images, start=1):
-            caption_parts = [f"<i>{html.escape(prompt[:200])}</i>"]
+            header = f"🎨 Готово ({elapsed:.1f}с)"
+            prompt_block = (
+                "📝 Твой промпт:\n" + html.escape(prompt[:600])
+            )
+            revised_block = ""
             if img.revised_prompt and img.revised_prompt.strip() != prompt.strip():
-                caption_parts.append(
-                    f"\n<b>Revised:</b> {html.escape(img.revised_prompt[:600])}"
+                revised_block = (
+                    "\n\n<b>Revised:</b> "
+                    + html.escape(img.revised_prompt[:400])
                 )
-            caption = "".join(caption_parts)[:1024]
+            caption = (
+                f"{header}\n\n"
+                f"{prompt_block}{revised_block}\n\n"
+                f"<code>{html.escape(meta_line)}</code>"
+            )
+            caption = caption[:1024]
             photo = BufferedInputFile(img.data, filename=f"img_{idx}.png")
             try:
                 await message.answer_photo(photo, caption=caption, parse_mode="HTML")
