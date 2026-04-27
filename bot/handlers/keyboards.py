@@ -189,6 +189,7 @@ USER_BOT_COMMANDS: list[BotCommand] = [
     BotCommand(command="clone", description="Сохранить ваш голосовой образец"),
     BotCommand(command="cvoice", description="Озвучить вашим голосом (F5-TTS)"),
     BotCommand(command="persona", description="Стиль общения (гопник, профессор, …)"),
+    BotCommand(command="freekeys", description="Бесплатные LLM-провайдеры со ссылками"),
     BotCommand(command="status", description="Текущие настройки"),
     BotCommand(command="reset", description="Очистить историю"),
     BotCommand(command="help", description="Справка"),

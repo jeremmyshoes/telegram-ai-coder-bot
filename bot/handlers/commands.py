@@ -72,6 +72,7 @@ USER_HELP_TEXT = """\
 /yt &lt;url&gt; — пересказ YouTube-видео (Whisper → gpt-5)
 /yt -full &lt;url&gt; — полный транскрипт без пересказа
 /persona &lt;ключ&gt; — стиль общения (gopnik, professor, child, …)
+/freekeys — список бесплатных LLM-провайдеров со ссылками
 /status — текущие настройки
 /reset — очистить историю
 /menu — открыть меню
@@ -112,6 +113,57 @@ ADMIN_HELP_TEXT = """\
 
 # Старое имя — для совместимости с кодом, который мог импортировать HELP_TEXT.
 HELP_TEXT = USER_HELP_TEXT
+
+# /freekeys — список халявных провайдеров с прямыми ссылками на регистрацию.
+# Все они уже встроены в бота и подключаются через /setkey.
+_FREEKEYS_TEXT = """\
+<b>🆓 Халявные LLM-провайдеры</b>
+
+Все они дают рабочие ключи без оплаты карты. Получаете ключ → админу:
+<code>/setkey &lt;provider&gt; &lt;ключ&gt;</code>, потом <code>/provider &lt;provider&gt;</code>
++ <code>/model &lt;model&gt;</code>.
+
+<b>1. OpenRouter</b> — единый ключ ко всем моделям (gpt, claude, gemini, llama,…).
+   • Бесплатные модели: deepseek-chat-v3, llama-3.3-70b, qwen-2.5-72b,
+     mistral-small, gemma-2-9b — лимит 50 req/день, ~1000 при $10 на счёте.
+   • Регистрация: <a href="https://openrouter.ai/sign-in">openrouter.ai/sign-in</a>
+   • Ключ: <a href="https://openrouter.ai/keys">openrouter.ai/keys</a>
+   • Бот: <code>/setkey openrouter sk-or-…</code>
+
+<b>2. Groq</b> — самый быстрый инференс (тысячи токенов/сек).
+   • Бесплатно: ~30 req/min на llama-3.3-70b, gpt-oss-120b, mixtral-8x7b.
+   • Регистрация: <a href="https://console.groq.com">console.groq.com</a>
+   • Ключ: <a href="https://console.groq.com/keys">console.groq.com/keys</a>
+   • Бот: <code>/setkey groq gsk_…</code>
+
+<b>3. Cerebras</b> — тоже очень быстрый, конкурент Groq.
+   • Бесплатно: ~30 req/min на llama-3.3-70b, qwen-3-coder, gpt-oss.
+   • Регистрация: <a href="https://cloud.cerebras.ai">cloud.cerebras.ai</a>
+   • Бот: <code>/setkey cerebras csk-…</code>
+
+<b>4. Google AI Studio (Gemini)</b> — gemini-2.5-flash-thinking бесплатно.
+   • Бесплатно: ~15 req/min, дневные лимиты на free tier.
+   • Регистрация и ключ: <a href="https://aistudio.google.com/apikey">aistudio.google.com/apikey</a>
+   • Бот: подключается через openai-совместимый base_url:
+     <code>/setkey custom &lt;ключ&gt; https://generativelanguage.googleapis.com/v1beta/openai/</code>
+
+<b>5. GitHub Models</b> — gpt-4o-mini/llama/mistral/phi от Microsoft.
+   • Бесплатно для тестов; ключ = ваш GitHub Personal Access Token (PAT).
+   • Создать PAT: <a href="https://github.com/settings/tokens">github.com/settings/tokens</a>
+     (галочки можно не ставить — для GitHub Models достаточно «no scopes»).
+   • Бот: <code>/setkey custom ghp_… https://models.github.ai/inference</code>
+
+<b>6. SambaNova</b> — llama-3.3-70b/405b бесплатно.
+   • Регистрация: <a href="https://cloud.sambanova.ai">cloud.sambanova.ai</a>
+   • Бот: <code>/setkey sambanova …</code>
+
+<b>7. HuggingFace Inference</b> — миксы открытых моделей.
+   • Регистрация: <a href="https://huggingface.co/settings/tokens">huggingface.co/settings/tokens</a>
+   • Бот: <code>/setkey huggingface hf_…</code>
+
+После сохранения ключа: <code>/provider …</code> → <code>/model …</code>
+(<code>/models</code> — список доступных моделей у провайдера).
+"""
 
 
 # Размеры, которые принимает OpenAI Images API
@@ -194,6 +246,12 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
         if not is_allowed(ctx.settings, _user_id(message)):
             return
         await send_long(message, _help_for(_user_id(message)), parse_mode="HTML")
+
+    @dp.message(Command("freekeys"))
+    async def cmd_freekeys(message: TgMessage) -> None:
+        if not is_allowed(ctx.settings, _user_id(message)):
+            return
+        await send_long(message, _FREEKEYS_TEXT, parse_mode="HTML")
 
     @dp.message(Command("menu"))
     async def cmd_menu(message: TgMessage) -> None:
