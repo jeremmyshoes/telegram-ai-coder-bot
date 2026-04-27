@@ -64,6 +64,15 @@ class Settings(BaseSettings):
         description="ID поискового движка из programmablesearchengine.google.com.",
     )
 
+    replicate_api_token: str = Field(
+        default="",
+        description=(
+            "API-токен Replicate (https://replicate.com/account/api-tokens). "
+            "Используется командой /cvoice (клонирование голоса через F5-TTS). "
+            "Пусто = /cvoice выключен."
+        ),
+    )
+
     log_chat_id: int = Field(
         default=0,
         description=(
