@@ -297,7 +297,7 @@ def build_tool_registry(
                         },
                         "num_results": {
                             "type": "integer",
-                            "description": "Сколько результатов (1..10)",
+                            "description": "Сколько результатов (1..20)",
                             "default": 5,
                         },
                     },

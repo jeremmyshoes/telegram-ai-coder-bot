@@ -120,12 +120,17 @@ async def duckduckgo_search(
     num_results: int = 5,
     timeout: float = 15.0,
 ) -> list[SearchResult]:
-    """Веб-поиск через DuckDuckGo (без API-ключей)."""
+    """Веб-поиск через DuckDuckGo (без API-ключей).
+
+    DDG-страница `html.duckduckgo.com/html/` обычно отдаёт ~30 результатов
+    в одном ответе, так что для запросов до 25 источников хватает одного
+    HTTP-запроса.
+    """
     query = (query or "").strip()
     if not query:
         raise WebSearchError("пустой запрос")
 
-    num = max(1, min(int(num_results), 10))
+    num = max(1, min(int(num_results), 25))
     headers = {
         "User-Agent": _USER_AGENT,
         "Accept-Language": "en-US,en;q=0.9,ru;q=0.8",
@@ -154,33 +159,25 @@ async def duckduckgo_search(
     return results
 
 
-async def google_search(
-    query: str,
+async def _google_search_page(
     *,
+    http: httpx.AsyncClient,
     api_key: str,
     cse_id: str,
-    num_results: int = 5,
-    timeout: float = 15.0,
+    query: str,
+    start: int,
+    num: int,
 ) -> list[SearchResult]:
-    """Поиск через Google Custom Search JSON API."""
-    query = (query or "").strip()
-    if not query:
-        raise WebSearchError("пустой запрос")
-    if not api_key or not cse_id:
-        raise WebSearchError(
-            "не настроены GOOGLE_SEARCH_API_KEY или GOOGLE_SEARCH_CSE_ID в .env"
-        )
-
-    num = max(1, min(int(num_results), 10))
+    """Один пейдж Google CSE (до 10 результатов)."""
     params = {
         "key": api_key,
         "cx": cse_id,
         "q": query,
-        "num": num,
+        "num": max(1, min(num, 10)),
+        "start": max(1, start),
     }
     try:
-        async with httpx.AsyncClient(timeout=timeout) as http:
-            r = await http.get(GOOGLE_CSE_URL, params=params)
+        r = await http.get(GOOGLE_CSE_URL, params=params)
     except httpx.HTTPError as exc:
         raise WebSearchError(f"сеть: {exc}") from exc
 
@@ -197,16 +194,62 @@ async def google_search(
         raise WebSearchError(f"некорректный JSON ответ: {exc}") from exc
 
     items = payload.get("items") or []
-    results: list[SearchResult] = []
+    out: list[SearchResult] = []
     for it in items:
-        results.append(
+        out.append(
             SearchResult(
                 title=str(it.get("title") or "").strip(),
                 link=str(it.get("link") or "").strip(),
                 snippet=str(it.get("snippet") or "").strip().replace("\n", " "),
             )
         )
-    return results
+    return out
+
+
+async def google_search(
+    query: str,
+    *,
+    api_key: str,
+    cse_id: str,
+    num_results: int = 5,
+    timeout: float = 15.0,
+) -> list[SearchResult]:
+    """Поиск через Google Custom Search JSON API.
+
+    CSE отдаёт максимум 10 результатов на запрос; для больших значений
+    `num_results` (до 30) делаем несколько последовательных запросов с
+    параметром `start`.
+    """
+    query = (query or "").strip()
+    if not query:
+        raise WebSearchError("пустой запрос")
+    if not api_key or not cse_id:
+        raise WebSearchError(
+            "не настроены GOOGLE_SEARCH_API_KEY или GOOGLE_SEARCH_CSE_ID в .env"
+        )
+
+    total = max(1, min(int(num_results), 30))
+    results: list[SearchResult] = []
+    async with httpx.AsyncClient(timeout=timeout) as http:
+        start = 1
+        while len(results) < total:
+            need = min(10, total - len(results))
+            page = await _google_search_page(
+                http=http,
+                api_key=api_key,
+                cse_id=cse_id,
+                query=query,
+                start=start,
+                num=need,
+            )
+            if not page:
+                break
+            results.extend(page)
+            if len(page) < need:
+                # CSE больше не отдаёт — не дожимаем дальше.
+                break
+            start += len(page)
+    return results[:total]
 
 
 async def web_search(
