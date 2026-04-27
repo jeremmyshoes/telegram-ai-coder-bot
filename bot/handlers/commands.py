@@ -6,6 +6,7 @@ import html
 import io
 import logging
 import math
+import re
 import shutil
 import time
 from contextlib import suppress
@@ -67,7 +68,8 @@ USER_HELP_TEXT = """\
 <b>Основные команды</b>
 /chat &lt;вопрос&gt; — один вопрос модели (без истории)
 /img &lt;промпт&gt; — сгенерировать картинку
-/search &lt;вопрос&gt; — умный веб-поиск со ссылками [1][2] (как Perplexity)
+/search &lt;вопрос&gt; — умный веб-поиск со ссылками [1][2] (по умолчанию 12 источников)
+/search -n 15 &lt;вопрос&gt; — взять N источников (1..20)
 /search -raw &lt;запрос&gt; — сырой список ссылок без LLM-синтеза
 /yt &lt;url&gt; — пересказ YouTube-видео (Whisper → gpt-5)
 /yt -full &lt;url&gt; — полный транскрипт без пересказа
@@ -911,34 +913,55 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
         # без LLM-синтеза. Полезно если у юзера нет openai-ключа или он просто хочет
         # сырую выдачу.
         raw_mode = False
-        if raw_query.startswith("-raw "):
-            raw_mode = True
-            raw_query = raw_query[len("-raw "):].strip()
-        elif raw_query == "-raw":
-            raw_query = ""
+        # Флаг -n N — сколько источников брать (1..20).
+        num_override: int | None = None
+        # Парсим флаги в цикле чтоб их можно было ставить в любом порядке.
+        while True:
+            if raw_query.startswith("-raw "):
+                raw_mode = True
+                raw_query = raw_query[len("-raw "):].strip()
+                continue
+            if raw_query == "-raw":
+                raw_query = ""
+                break
+            m = re.match(r"-n\s+(\d+)\s+(.*)$", raw_query, flags=re.DOTALL)
+            if m:
+                try:
+                    num_override = max(1, min(int(m.group(1)), 20))
+                except ValueError:
+                    num_override = None
+                raw_query = m.group(2).strip()
+                continue
+            break
 
         if not raw_query:
             await message.answer(
                 "Использование: <code>/search ваш вопрос</code> — perplexity-режим: "
                 "бот ищет в интернете, читает источники и пишет связный ответ со "
-                "ссылками <code>[1]</code>, <code>[2]</code>, …\n\n"
-                "<code>/search -raw запрос</code> — старый режим: только список "
-                "ссылок без LLM-синтеза.",
+                "ссылками <code>[1]</code>, <code>[2]</code>, … (по умолчанию 12 источников)\n\n"
+                "Флаги:\n"
+                "• <code>/search -n 15 запрос</code> — взять N источников (1..20)\n"
+                "• <code>/search -raw запрос</code> — старый режим: только список "
+                "ссылок без LLM-синтеза\n"
+                "• флаги можно комбинировать: <code>/search -raw -n 20 запрос</code>",
                 parse_mode="HTML",
             )
             return
         query = raw_query
         assert message.from_user
+        # Дефолты: 12 источников на perplexity-режим, 12 на raw.
+        synth_num = num_override if num_override is not None else 12
+        raw_num = num_override if num_override is not None else 12
 
         # === Сырой режим — просто выдача ссылок (как раньше). ============
         if raw_mode:
-            thinking = await message.answer("🔎 Ищу…")
+            thinking = await message.answer(f"🔎 Ищу ({raw_num} источников)…")
             try:
                 results, used = await web_search(
                     query,
                     google_api_key=ctx.settings.google_search_api_key,
                     google_cse_id=ctx.settings.google_search_cse_id,
-                    num_results=5,
+                    num_results=raw_num,
                 )
             except WebSearchError as exc:
                 with suppress(Exception):
@@ -969,7 +992,9 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
             return
         api_key, base_url = key_pair
 
-        progress = await message.answer("🔎 Ищу источники…")
+        progress = await message.answer(
+            f"🔎 Ищу источники ({synth_num})…"
+        )
 
         # 2. Поиск.
         try:
@@ -977,7 +1002,7 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
                 query,
                 google_api_key=ctx.settings.google_search_api_key,
                 google_cse_id=ctx.settings.google_search_cse_id,
-                num_results=6,
+                num_results=synth_num,
             )
         except WebSearchError as exc:
             with suppress(Exception):
@@ -1001,9 +1026,13 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
         # results↔pages совпадали по длине (zip(strict=True) иначе бросит).
         results_with_links = [r for r in results if r.link]
         urls = [r.link for r in results_with_links]
-        pages = await fetch_pages(urls, timeout=10.0, max_chars=3500, max_concurrency=5)
+        # Скачиваем в 8 потоков чтоб 12-15 источников открывались быстро.
+        # max_chars уменьшен до 2500 чтоб общий контекст помещался в LLM без
+        # перерасхода токенов.
+        pages = await fetch_pages(urls, timeout=10.0, max_chars=2500, max_concurrency=8)
 
-        # Оставляем только успешно прочитанные (с непустым текстом).
+        # Оставляем только успешно прочитанные (с непустым текстом). Собираем
+        # до synth_num источников; LLM сам выберет релевантные.
         usable: list[tuple[int, str, str, str]] = []  # (index, title, url, text)
         for idx, (res, page) in enumerate(
             zip(results_with_links, pages, strict=True), start=1
@@ -1012,14 +1041,14 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
                 continue
             title = page.title or res.title or page.url
             usable.append((idx, title, page.url, page.text))
-            if len(usable) >= 5:
+            if len(usable) >= synth_num:
                 break
 
         if not usable:
             # Все источники не открылись — fallback на снippet'ы из выдачи.
             with suppress(Exception):
                 await progress.edit_text("⚠ Не удалось скачать источники, использую сниппеты…")
-            for idx, res in enumerate(results[:5], start=1):
+            for idx, res in enumerate(results[:synth_num], start=1):
                 if not res.snippet:
                     continue
                 usable.append((idx, res.title or res.link, res.link, res.snippet))
@@ -1461,7 +1490,10 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
             with suppress(Exception):
                 await query.message.edit_text(
                     "🔍 Отправьте: <code>/search запрос</code>\n\n"
-                    "Пример: <code>/search новости AI сегодня</code>",
+                    "Примеры:\n"
+                    "• <code>/search новости AI сегодня</code>\n"
+                    "• <code>/search -n 15 история Linux</code> — 15 источников\n"
+                    "• <code>/search -raw -n 20 python вакансии</code> — 20 сырых ссылок",
                     parse_mode="HTML",
                     reply_markup=main_menu_inline_kb(is_admin=admin),
                 )
