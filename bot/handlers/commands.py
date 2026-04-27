@@ -133,10 +133,21 @@ _FREEKEYS_TEXT = """\
 <b>1. OpenRouter</b> — агрегатор сотни моделей через один ключ.
    • <b>Лимиты free</b>: 20 req/min, 200 req/день. После пополнения на $10
      дневной лимит растёт до 1000 req/день, а до этого — только free-модели.
-   • <b>Free-модели (ID оканчивается на <code>:free</code>)</b>: deepseek-v3,
-     deepseek-r1, llama-3.3-70b, qwen-2.5-72b, gemini-2.0-flash-exp,
-     mistral-small-3, glm-4.5-air.
-   • <b>Плюс</b>: <i>работает из РФ/РБ</i>, даёт Gemini без VPN.
+   • <b>Реальные free-модели (ID оканчивается на <code>:free</code>, сверено
+     с /api/v1/models, апрель 2026)</b>:
+     <code>openai/gpt-oss-120b:free</code>,
+     <code>openai/gpt-oss-20b:free</code>,
+     <code>qwen/qwen3-coder:free</code>,
+     <code>qwen/qwen3-next-80b-a3b-instruct:free</code>,
+     <code>z-ai/glm-4.5-air:free</code>,
+     <code>minimax/minimax-m2.5:free</code>,
+     <code>google/gemma-3-27b-it:free</code>,
+     <code>nvidia/nemotron-3-nano-30b-a3b:free</code>,
+     <code>nousresearch/hermes-3-llama-3.1-405b:free</code>,
+     <code>meta-llama/llama-3.2-3b-instruct:free</code>.
+   • ⚠ <b>Gemini на free-тире OpenRouter сейчас нет</b> — только на платных
+     моделях (прежний <code>gemini-2.0-flash-exp:free</code> отозван Google).
+   • <b>Плюс</b>: <i>работает из РФ/РБ без VPN</i>.
    • Ключ: <a href="https://openrouter.ai/keys">openrouter.ai/keys</a>
    • Бот: <code>/setkey openrouter sk-or-…</code>
 
@@ -162,8 +173,8 @@ _FREEKEYS_TEXT = """\
      gemini-2.5-flash-lite — 15 RPM / 1500 RPD,
      gemini-2.5-flash — 10 RPM / 250 RPD,
      gemini-2.5-pro — 5 RPM / 100 RPD. 250K tokens/min на всех.
-   • ⚠ <b>Недоступно в РФ/РБ</b> — либо VPN (US/EU), либо подтянуть
-     тех же Gemini через OpenRouter (пункт 1, работает без VPN).
+   • ⚠ <b>Недоступно в РФ/РБ</b> — нужен VPN (US/EU/UA) при регистрации
+     и первом запросе, иначе Google блочит по IP/региону аккаунта.
    • Free tier <i>использует ваши данные для обучения моделей</i>.
    • Ключ: <a href="https://aistudio.google.com/apikey">aistudio.google.com/apikey</a>
    • Бот: <code>/setkey custom &lt;ключ&gt; https://generativelanguage.googleapis.com/v1beta/openai/</code>
@@ -190,7 +201,7 @@ PRO ($9/мес) даёт $2/мес — всё равно мало. Не халя
 
 <b>Итого</b>: если нужна просто рабочая халява без возни — Groq + OpenRouter.
 Если важен длинный context и объём — Cerebras (1M токенов/день).
-Если нужен Gemini из РФ/РБ — через OpenRouter.
+Gemini бесплатно возможен только через AI Studio с VPN (в РФ/РБ заблокирован).
 """
 
 
