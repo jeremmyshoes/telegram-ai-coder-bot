@@ -286,12 +286,7 @@ def register_voice_handlers(dp: Dispatcher, ctx: AppContext) -> None:
             )
             return
 
-        # Качаем файл во временное место в _voice
         d = _voice_sample_dir(ctx, uid)
-        # Очистка старого
-        for old in d.glob("sample.*"):
-            with suppress(Exception):
-                old.unlink()
 
         # Расширение по mime/типу
         if message.voice or (message.reply_to_message and message.reply_to_message.voice):
@@ -305,13 +300,29 @@ def register_voice_handlers(dp: Dispatcher, ctx: AppContext) -> None:
                 "audio/ogg": "ogg", "audio/opus": "ogg",
             }.get(mime, "ogg")
 
-        target = d / f"sample.{ext}"
+        # Скачиваем во временный файл, чтобы при ошибке не потерять
+        # уже сохранённый ранее образец.
+        tmp_target = d / f"sample.new.{ext}"
+        with suppress(Exception):
+            tmp_target.unlink()
         try:
-            await bot.download(media, destination=target)
+            await bot.download(media, destination=tmp_target)
         except Exception as exc:  # noqa: BLE001
             logger.exception("download voice sample failed")
+            with suppress(Exception):
+                tmp_target.unlink()
             await message.answer(f"⚠ Не смог скачать: {html_escape(str(exc)[:200])}")
             return
+
+        # Скачали успешно — удаляем старые sample.* (любых расширений)
+        # и переименовываем временный.
+        for old in d.glob("sample.*"):
+            if old == tmp_target:
+                continue
+            with suppress(Exception):
+                old.unlink()
+        target = d / f"sample.{ext}"
+        tmp_target.rename(target)
 
         # Расшифровка
         text_path = _sample_text_path(ctx, uid)
