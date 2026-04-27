@@ -924,13 +924,16 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
             if raw_query == "-raw":
                 raw_query = ""
                 break
-            m = re.match(r"-n\s+(\d+)\s+(.*)$", raw_query, flags=re.DOTALL)
+            # Хвостовая часть после числа опциональна, чтобы `/search -n 15`
+            # без запроса корректно валился в usage-help, а не уходил искать
+            # литеральную строку «-n 15».
+            m = re.match(r"-n\s+(\d+)(?:\s+(.*))?$", raw_query, flags=re.DOTALL)
             if m:
                 try:
                     num_override = max(1, min(int(m.group(1)), 20))
                 except ValueError:
                     num_override = None
-                raw_query = m.group(2).strip()
+                raw_query = (m.group(2) or "").strip()
                 continue
             break
 
