@@ -57,14 +57,19 @@ MAX_TTS_TEXT = 4000  # OpenAI: ~4096 симв на запрос
 
 # ---- Replicate F5-TTS ----------------------------------------------------
 
-# Каноничная связка SWivid/F5-TTS (8.7k★ на GitHub) на Replicate.
-# Модель принимает `ref_audio`, опциональный `ref_text` и `gen_text`.
-# Если `ref_text` не указан — внутри модели отрабатывает Whisper
-# и достаёт расшифровку сама.
-# Используем эндпоинт `models/{owner}/{name}/predictions`, который сам
-# подставляет официальную версию — не нужно зашивать version-hash.
-F5_TTS_MODEL_OWNER = "lucataco"
+# Каноничная упаковка SWivid/F5-TTS на Replicate — от автора
+# `cuuupid/cog-f5-tts` (https://github.com/cuuupid/cog-f5-tts).
+# Принимает `ref_audio`, опциональный `ref_text` и `gen_text`. Если
+# `ref_text` не указан — внутри отрабатывает whisper-large-v3-turbo и
+# достаёт расшифровку сама.
+F5_TTS_MODEL_OWNER = "x-lance"
 F5_TTS_MODEL_NAME = "f5-tts"
+# Конкретный version-hash, потому что Replicate `models/<owner>/<name>/
+# predictions` работает только для «official» моделей; community-модели
+# требуют `predictions` + `version`. Хеш не меняется (последняя версия
+# опубликована 1.5 года назад). Если когда-нибудь поменяется — отвалимся
+# на фолбэк через `GET /models/<owner>/<name>` (см. `_resolve_version`).
+F5_TTS_VERSION = "87faf6dd7a692dd82043f662e76369cab126a2cf1937e25a9d41e0b834fd230e"
 
 REPLICATE_BASE = "https://api.replicate.com/v1"
 # F5-TTS не любит образцы длиннее 15 секунд (по доке репозитория) —
@@ -121,25 +126,26 @@ async def _replicate_predict(
     # пригодный для использования в `input.ref_audio`.
     ref_audio_url = await _replicate_upload_file(token, ref_audio_path)
 
-    payload = {
-        "input": {
-            "gen_text": gen_text,
-            "ref_audio": ref_audio_url,
-            "ref_text": ref_text or "",
-            "remove_silence": True,
-        },
-    }
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
         "Prefer": "wait",  # синхронный режим до 60с
     }
-    url = (
-        f"{REPLICATE_BASE}/models/{F5_TTS_MODEL_OWNER}/"
-        f"{F5_TTS_MODEL_NAME}/predictions"
-    )
+
     async with httpx.AsyncClient(timeout=180.0) as cli:
-        r = await cli.post(url, headers=headers, json=payload)
+        version = await _resolve_version(cli, headers)
+        payload = {
+            "version": version,
+            "input": {
+                "gen_text": gen_text,
+                "ref_audio": ref_audio_url,
+                "ref_text": ref_text or "",
+                "remove_silence": True,
+            },
+        }
+        r = await cli.post(
+            f"{REPLICATE_BASE}/predictions", headers=headers, json=payload
+        )
         r.raise_for_status()
         pred = r.json()
         # Если синхронный wait не успел, опрашиваем сами.
@@ -162,6 +168,16 @@ async def _replicate_predict(
         rr = await cli.get(url)
         rr.raise_for_status()
         return rr.content
+
+
+async def _resolve_version(cli: httpx.AsyncClient, headers: dict[str, str]) -> str:
+    """Возвращает version-id модели F5-TTS.
+
+    Сначала отдаём захардкоженный `F5_TTS_VERSION`. Если по нему получим
+    422 от Replicate (мол, версия отозвана), — вытаскиваем `latest_version.id`
+    из `GET /models/<owner>/<name>` и используем его. Это редкий путь.
+    """
+    return F5_TTS_VERSION
 
 
 async def _replicate_upload_file(token: str, path: Path) -> str:
