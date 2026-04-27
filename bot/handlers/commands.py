@@ -115,54 +115,82 @@ ADMIN_HELP_TEXT = """\
 HELP_TEXT = USER_HELP_TEXT
 
 # /freekeys — список халявных провайдеров с прямыми ссылками на регистрацию.
-# Все они уже встроены в бота и подключаются через /setkey.
+# Цифры лимитов — актуальные на апрель 2026. Источники:
+#   OpenRouter  — https://openrouter.ai/docs/api/reference/limits
+#   Groq        — https://console.groq.com/docs/rate-limits
+#   Cerebras    — https://inference-docs.cerebras.ai/support/rate-limits
+#   Gemini      — https://ai.google.dev/gemini-api/docs/rate-limits
+#   GitHub Models — https://docs.github.com/en/github-models
+#   SambaNova   — https://docs.sambanova.ai/docs/en/models/rate-limits
+# Все сервисы меняют лимиты — цифры могут устареть.
 _FREEKEYS_TEXT = """\
-<b>🆓 Халявные LLM-провайдеры</b>
+<b>🆓 Халявные LLM-провайдеры (апрель 2026)</b>
 
-Все они дают рабочие ключи без оплаты карты. Получаете ключ → админу:
-<code>/setkey &lt;provider&gt; &lt;ключ&gt;</code>, потом <code>/provider &lt;provider&gt;</code>
-+ <code>/model &lt;model&gt;</code>.
+Все дают рабочие ключи без оплаты карты. Порядок: зарегали → забрали
+ключ → админу <code>/setkey &lt;provider&gt; &lt;ключ&gt;</code> →
+<code>/provider &lt;provider&gt;</code> + <code>/model &lt;model&gt;</code>.
 
-<b>1. OpenRouter</b> — единый ключ ко всем моделям (gpt, claude, gemini, llama,…).
-   • Бесплатные модели: deepseek-chat-v3, llama-3.3-70b, qwen-2.5-72b,
-     mistral-small, gemma-2-9b — лимит 50 req/день, ~1000 при $10 на счёте.
-   • Регистрация: <a href="https://openrouter.ai/sign-in">openrouter.ai/sign-in</a>
+<b>1. OpenRouter</b> — агрегатор сотни моделей через один ключ.
+   • <b>Лимиты free</b>: 20 req/min, 200 req/день. После пополнения на $10
+     дневной лимит растёт до 1000 req/день, а до этого — только free-модели.
+   • <b>Free-модели (ID оканчивается на <code>:free</code>)</b>: deepseek-v3,
+     deepseek-r1, llama-3.3-70b, qwen-2.5-72b, gemini-2.0-flash-exp,
+     mistral-small-3, glm-4.5-air.
+   • <b>Плюс</b>: <i>работает из РФ/РБ</i>, даёт Gemini без VPN.
    • Ключ: <a href="https://openrouter.ai/keys">openrouter.ai/keys</a>
    • Бот: <code>/setkey openrouter sk-or-…</code>
 
-<b>2. Groq</b> — самый быстрый инференс (тысячи токенов/сек).
-   • Бесплатно: ~30 req/min на llama-3.3-70b, gpt-oss-120b, mixtral-8x7b.
-   • Регистрация: <a href="https://console.groq.com">console.groq.com</a>
+<b>2. Groq</b> — самый быстрый инференс в мире (LPU-чипы, ~500 tok/сек).
+   • <b>Лимиты free</b>: 30 req/min, 1000 req/день, 6K токенов/min для
+     большинства моделей. У llama-3.1-8b дневной лимит — 14400 req/день.
+   • <b>Модели</b>: llama-3.3-70b-versatile, llama-3.1-8b-instant,
+     llama-4-scout-17b, llama-4-maverick-17b, deepseek-r1-distill-70b,
+     qwen-qwq-32b, gemma-2-9b, openai/gpt-oss-120b, openai/gpt-oss-20b.
    • Ключ: <a href="https://console.groq.com/keys">console.groq.com/keys</a>
    • Бот: <code>/setkey groq gsk_…</code>
 
-<b>3. Cerebras</b> — тоже очень быстрый, конкурент Groq.
-   • Бесплатно: ~30 req/min на llama-3.3-70b, qwen-3-coder, gpt-oss.
-   • Регистрация: <a href="https://cloud.cerebras.ai">cloud.cerebras.ai</a>
+<b>3. Cerebras</b> — конкурент Groq на WSE-чипах, <b>1 000 000 токенов/день</b>.
+   • <b>Лимиты free</b>: 30 req/min, 60K–100K токенов/min, context сейчас
+     временно обрезан до 8192 токенов для всех free-моделей.
+   • <b>Модели</b>: llama-3.3-70b, qwen-3-coder-480b, zai-glm-4.7,
+     gpt-oss-120b (qwen-3-235b и llama3.1-8b <i>deprecated 27 May 2026</i>).
+   • Ключ: <a href="https://cloud.cerebras.ai">cloud.cerebras.ai</a>
    • Бот: <code>/setkey cerebras csk-…</code>
 
-<b>4. Google AI Studio (Gemini)</b> — gemini-2.5-flash-thinking бесплатно.
-   • Бесплатно: ~15 req/min, дневные лимиты на free tier.
-   • Регистрация и ключ: <a href="https://aistudio.google.com/apikey">aistudio.google.com/apikey</a>
-   • Бот: подключается через openai-совместимый base_url:
-     <code>/setkey custom &lt;ключ&gt; https://generativelanguage.googleapis.com/v1beta/openai/</code>
+<b>4. Google AI Studio (Gemini)</b> — 1500 req/день на flash-lite.
+   • <b>Лимиты free</b> (после снижения в декабре 2025):
+     gemini-2.5-flash-lite — 15 RPM / 1500 RPD,
+     gemini-2.5-flash — 10 RPM / 250 RPD,
+     gemini-2.5-pro — 5 RPM / 100 RPD. 250K tokens/min на всех.
+   • ⚠ <b>Недоступно в РФ/РБ</b> — либо VPN (US/EU), либо подтянуть
+     тех же Gemini через OpenRouter (пункт 1, работает без VPN).
+   • Free tier <i>использует ваши данные для обучения моделей</i>.
+   • Ключ: <a href="https://aistudio.google.com/apikey">aistudio.google.com/apikey</a>
+   • Бот: <code>/setkey custom &lt;ключ&gt; https://generativelanguage.googleapis.com/v1beta/openai/</code>
 
-<b>5. GitHub Models</b> — gpt-4o-mini/llama/mistral/phi от Microsoft.
-   • Бесплатно для тестов; ключ = ваш GitHub Personal Access Token (PAT).
-   • Создать PAT: <a href="https://github.com/settings/tokens">github.com/settings/tokens</a>
-     (галочки можно не ставить — для GitHub Models достаточно «no scopes»).
+<b>5. GitHub Models</b> — ~50 req/день на high-tier (gpt-4o/claude/grok).
+   • <b>Лимиты free</b>: ~50 req/день на high-tier, больше на low-tier.
+     В апреле 2026 лимиты ужесточили, могут менять.
+   • <b>Модели</b>: gpt-4o, gpt-4o-mini, o1-mini, claude-3.5-sonnet,
+     llama-3.3-70b, deepseek-v3, mistral, phi-4, grok-3, cohere-command-r.
+   • Ключ = GitHub <b>fine-grained PAT</b> со scope <code>models:read</code>:
+     <a href="https://github.com/settings/personal-access-tokens">github.com/settings/personal-access-tokens</a>
    • Бот: <code>/setkey custom ghp_… https://models.github.ai/inference</code>
 
-<b>6. SambaNova</b> — llama-3.3-70b/405b бесплатно.
-   • Регистрация: <a href="https://cloud.sambanova.ai">cloud.sambanova.ai</a>
+<b>6. SambaNova Cloud</b> — llama-3.3-70b/405b, DeepSeek-V3.1, MiniMax-M2.5.
+   • <b>Лимиты free</b>: 20 req/min и дневной token-cap (варьируется по
+     модели). Developer tier (с картой) поднимает до 240 RPM.
+   • <b>Модели</b>: Llama-3.3-70B, DeepSeek-V3.1, MiniMax-M2.5, gpt-oss-120b.
+   • Ключ: <a href="https://cloud.sambanova.ai">cloud.sambanova.ai</a>
    • Бот: <code>/setkey sambanova …</code>
 
-<b>7. HuggingFace Inference</b> — миксы открытых моделей.
-   • Регистрация: <a href="https://huggingface.co/settings/tokens">huggingface.co/settings/tokens</a>
-   • Бот: <code>/setkey huggingface hf_…</code>
+⚠ <b>HuggingFace Inference</b> — убрал из списка: с 2025 года у free-юзера
+всего $0.10 кредитов/мес, этого хватает буквально на несколько запросов.
+PRO ($9/мес) даёт $2/мес — всё равно мало. Не халява.
 
-После сохранения ключа: <code>/provider …</code> → <code>/model …</code>
-(<code>/models</code> — список доступных моделей у провайдера).
+<b>Итого</b>: если нужна просто рабочая халява без возни — Groq + OpenRouter.
+Если важен длинный context и объём — Cerebras (1M токенов/день).
+Если нужен Gemini из РФ/РБ — через OpenRouter.
 """
 
 
