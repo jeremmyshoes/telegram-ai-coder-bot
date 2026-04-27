@@ -427,8 +427,25 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
         if not is_allowed(ctx.settings, uid):
             await message.answer("Доступ запрещён. Свяжитесь с администратором бота.")
             return
+        first_name = ""
+        if message.from_user and message.from_user.first_name:
+            first_name = html.escape(message.from_user.first_name)
+        greeting_who = f", <b>{first_name}</b>" if first_name else ""
         await message.answer(
-            "👋 Привет! Выберите действие кнопкой ниже или просто пишите сообщение — бот ответит.",
+            f"👋 Привет{greeting_who}! Я <b>AI Helper</b> — готов к работе.\n\n"
+            "Что умею:\n"
+            "• 💬 <b>Чат</b> — пишите вопрос обычным сообщением\n"
+            "• 🎨 <b>Картинки</b> — <code>/img промпт</code>\n"
+            "• 🔍 <b>Поиск в интернете</b> — <code>/search вопрос</code>\n"
+            "• 📄 <b>Файлы и фото</b> — пришлите PDF/Word/Excel/картинку, "
+            "перескажу содержание\n"
+            "• 🎬 <b>YouTube</b> — <code>/yt &lt;ссылка&gt;</code> для пересказа\n"
+            "• 🎙 <b>Голос</b> — <code>/voice текст</code> (озвучка), "
+            "<code>/clone</code> + <code>/cvoice</code> (ваш голос)\n"
+            "• 🎭 <b>Стиль общения</b> — <code>/persona</code> "
+            "(гопник, профессор, Fanuc-оператор и др.)\n\n"
+            "Жмите кнопку ниже или сразу пишите вопрос 👇",
+            parse_mode="HTML",
             reply_markup=main_menu_inline_kb(is_admin=is_admin(ctx.settings, uid)),
         )
 
