@@ -18,6 +18,7 @@ from bot.handlers import (
     register_chat_handlers,
     register_command_handlers,
     register_file_handlers,
+    register_voice_handlers,
     register_yt_handlers,
 )
 from bot.handlers.audit import install_audit
@@ -56,6 +57,7 @@ async def main() -> None:
     # конце есть catch-all `F.text.startswith("/")`, который иначе
     # перехватит /yt и ответит «Неизвестная команда».
     register_yt_handlers(dp, ctx)
+    register_voice_handlers(dp, ctx)
     register_command_handlers(dp, ctx)
     register_file_handlers(dp, ctx)
     register_chat_handlers(dp, ctx)
