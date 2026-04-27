@@ -190,6 +190,7 @@ USER_BOT_COMMANDS: list[BotCommand] = [
     BotCommand(command="cvoice", description="Озвучить вашим голосом (F5-TTS)"),
     BotCommand(command="persona", description="Стиль общения (гопник, профессор, …)"),
     BotCommand(command="freekeys", description="Бесплатные LLM-провайдеры со ссылками"),
+    BotCommand(command="acedata", description="AceData: модели и ориентир по ценам"),
     BotCommand(command="status", description="Текущие настройки"),
     BotCommand(command="reset", description="Очистить историю"),
     BotCommand(command="help", description="Справка"),

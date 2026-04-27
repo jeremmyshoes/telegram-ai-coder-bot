@@ -205,6 +205,158 @@ Gemini бесплатно возможен только через AI Studio с 
 """
 
 
+# /acedata — показывается если у юзера (или у админа) нет сохранённого ключа.
+_ACEDATA_NOKEY_TEXT = """\
+<b>AceData Cloud — ключ не сохранён</b>
+
+AceData — агрегатор, даёт единый ключ ко всем популярным моделям
+(GPT, Claude, Gemini, DeepSeek, Grok, Kimi, + картинки/видео/музыка).
+Биллинг pay-as-you-go в Credits (1 Credit ≈ $0.01).
+
+<b>Что сделать</b>:
+1. Зарегистрироваться: <a href="https://platform.acedata.cloud">platform.acedata.cloud</a>
+2. Создать API-Token в консоли → вкладка Tokens.
+3. В боте: <code>/setkey acedata ваш-токен</code>
+4. Снова: <code>/acedata</code> — покажу актуальный список моделей и цены.
+
+Смотреть баланс Credits и фактические списания можно только в их
+дашборде — публичного balance-endpoint'а они не публикуют.
+"""
+
+# Ориентир по ценам для /acedata — собраны из официальных прайсов OpenAI/
+# Anthropic/Google/DeepSeek/xAI (на ~апрель 2026). AceData обычно держит
+# 80–95% от официальных цен. Цены in/out за 1M токенов.
+_ACEDATA_PRICE_HINTS: dict[str, tuple[str, str]] = {
+    "gpt-4o-mini": ("$0.15", "$0.60"),
+    "gpt-4o": ("$2.50", "$10"),
+    "gpt-4.1": ("$2.00", "$8"),
+    "gpt-4.1-mini": ("$0.40", "$1.60"),
+    "gpt-5": ("$1.25", "$10"),
+    "gpt-5-mini": ("$0.25", "$2"),
+    "o3": ("$2", "$8"),
+    "o4-mini": ("$1.10", "$4.40"),
+    "claude-3-5-haiku": ("$0.80", "$4"),
+    "claude-3-5-sonnet": ("$3", "$15"),
+    "claude-3-7-sonnet": ("$3", "$15"),
+    "claude-opus-4": ("$15", "$75"),
+    "claude-sonnet-4": ("$3", "$15"),
+    "gemini-2.5-flash": ("$0.30", "$2.50"),
+    "gemini-2.5-flash-lite": ("$0.10", "$0.40"),
+    "gemini-2.5-pro": ("$1.25", "$10"),
+    "deepseek-chat": ("$0.27", "$1.10"),
+    "deepseek-reasoner": ("$0.55", "$2.19"),
+    "grok-4": ("$3", "$15"),
+    "grok-3": ("$3", "$15"),
+    "kimi-k2": ("$0.15", "$2.50"),
+}
+
+
+def _classify_acedata_model(model_id: str) -> str:
+    """Определяет семью модели для группировки в /acedata."""
+    m = model_id.lower()
+    if m.startswith(("gpt-image", "dall-e")):
+        return "🎨 Картинки (OpenAI)"
+    if m.startswith(("flux", "black-forest", "sd-", "stable-diffusion", "seedream", "nano-banana", "midjourney", "mj-")):
+        return "🎨 Картинки"
+    if m.startswith(("sora", "veo", "luma", "kling", "hailuo", "seedance", "wan")):
+        return "🎬 Видео"
+    if m.startswith(("suno", "fish", "producer", "tts-", "whisper")):
+        return "🎵 Аудио"
+    if m.startswith(("gpt-", "chatgpt", "o1", "o3", "o4")):
+        return "🤖 OpenAI (GPT/o*)"
+    if m.startswith("claude"):
+        return "🤖 Anthropic (Claude)"
+    if m.startswith("gemini"):
+        return "🤖 Google (Gemini)"
+    if m.startswith("deepseek"):
+        return "🤖 DeepSeek"
+    if m.startswith("grok"):
+        return "🤖 xAI (Grok)"
+    if m.startswith(("kimi", "moonshot")):
+        return "🤖 Moonshot (Kimi)"
+    if m.startswith("text-embedding"):
+        return "🧮 Embeddings"
+    return "📦 Прочее"
+
+
+def _price_hint_for(model_id: str) -> str | None:
+    """Ищет приблизительную цену для модели (по префиксу)."""
+    ml = model_id.lower()
+    best_key: str | None = None
+    for key in _ACEDATA_PRICE_HINTS:
+        if ml.startswith(key) and (best_key is None or len(key) > len(best_key)):
+            best_key = key
+    if best_key is None:
+        return None
+    inp, out = _ACEDATA_PRICE_HINTS[best_key]
+    return f"{inp} / {out}"
+
+
+def _build_acedata_info(models: list[str], fetch_error: str | None) -> str:
+    """Собирает HTML-текст для ответа /acedata."""
+    lines: list[str] = ["<b>🔷 AceData Cloud</b>"]
+    if fetch_error:
+        lines.append(
+            "⚠ Не смог получить список моделей через API: "
+            f"<code>{html.escape(fetch_error)}</code>\n"
+            "Проверьте что ключ и base_url (<code>https://api.acedata.cloud/openai</code>) живые."
+        )
+    elif not models:
+        lines.append(
+            "⚠ API вернул пустой список моделей. Возможно ключ не привязан "
+            "к подписке или истёк — проверьте в дашборде."
+        )
+    else:
+        lines.append(f"Доступно моделей: <b>{len(models)}</b>")
+        groups: dict[str, list[str]] = {}
+        for m in models:
+            groups.setdefault(_classify_acedata_model(m), []).append(m)
+        # Выводим группы в предсказуемом порядке.
+        order = [
+            "🤖 OpenAI (GPT/o*)",
+            "🤖 Anthropic (Claude)",
+            "🤖 Google (Gemini)",
+            "🤖 DeepSeek",
+            "🤖 xAI (Grok)",
+            "🤖 Moonshot (Kimi)",
+            "🎨 Картинки (OpenAI)",
+            "🎨 Картинки",
+            "🎬 Видео",
+            "🎵 Аудио",
+            "🧮 Embeddings",
+            "📦 Прочее",
+        ]
+        for group in order:
+            items = groups.get(group) or []
+            if not items:
+                continue
+            lines.append("")
+            lines.append(f"<b>{group}</b>")
+            for mid in items[:30]:
+                price = _price_hint_for(mid)
+                suffix = f" — <i>≈ {price} / 1M</i>" if price else ""
+                lines.append(f"• <code>{html.escape(mid)}</code>{suffix}")
+            if len(items) > 30:
+                lines.append(f"  …и ещё {len(items) - 30}")
+    lines.append("")
+    lines.append(
+        "<b>Цены</b>: AceData — реселлер, обычно 80–95% от официальных "
+        "прайсов OpenAI/Anthropic/Google. Выше по моделям указаны "
+        "ориентировочные цены <i>input / output за 1M токенов</i>."
+    )
+    lines.append(
+        "<b>Баланс Credits</b>: только в дашборде — "
+        "<a href=\"https://platform.acedata.cloud\">platform.acedata.cloud</a>."
+    )
+    lines.append(
+        "<b>Использование в боте</b>: "
+        "<code>/provider acedata</code> + <code>/model &lt;id&gt;</code> — "
+        "обычный чат. <code>/img -p acedata -m gpt-image-1 &lt;промпт&gt;</code> — "
+        "картинка через OpenAI gpt-image-1 через acedata."
+    )
+    return "\n".join(lines)
+
+
 # Размеры, которые принимает OpenAI Images API
 _DALLE3_SIZES = {"1024x1024", "1024x1792", "1792x1024"}
 _DALLE2_SIZES = {"256x256", "512x512", "1024x1024"}
@@ -291,6 +443,76 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
         if not is_allowed(ctx.settings, _user_id(message)):
             return
         await send_long(message, _FREEKEYS_TEXT, parse_mode="HTML")
+
+    @dp.message(Command("acedata"))
+    async def cmd_acedata(message: TgMessage) -> None:
+        """Инфо о AceData: актуальный список моделей, прайс-чит и ссылки.
+
+        Тянет `GET /openai/v1/models` с сохранённым acedata-ключом, группирует
+        модели по семьям и дополняет справочными ценами (публичных
+        прайс-endpoint'ов у acedata нет, балансы — только в дашборде).
+        """
+        uid = _user_id(message)
+        if not is_allowed(ctx.settings, uid):
+            return
+        assert uid is not None
+
+        # Ищем acedata-ключ: сам юзер → затем админы (как в find_image_key).
+        key_row = None
+        candidates = [uid]
+        with suppress(Exception):
+            for admin_id in ctx._fallback_admin_ids():  # noqa: SLF001
+                if admin_id not in candidates:
+                    candidates.append(admin_id)
+        for cand in candidates:
+            key_row = await ctx.db.get_key(cand, "acedata")
+            if key_row is not None:
+                break
+
+        if key_row is None:
+            await send_long(message, _ACEDATA_NOKEY_TEXT, parse_mode="HTML")
+            return
+
+        try:
+            api_key = ctx.vault.decrypt(key_row.encrypted)
+        except RuntimeError:
+            await message.answer(
+                "Не удалось расшифровать acedata-ключ — переустановите через "
+                "<code>/setkey acedata …</code>.",
+                parse_mode="HTML",
+            )
+            return
+
+        base_url = (key_row.base_url or "https://api.acedata.cloud/openai").rstrip("/")
+        models_url = f"{base_url}/v1/models"
+
+        models: list[str] = []
+        fetch_error: str | None = None
+        try:
+            import httpx
+
+            async with httpx.AsyncClient(timeout=20.0) as cli:
+                r = await cli.get(
+                    models_url,
+                    headers={"Authorization": f"Bearer {api_key}"},
+                )
+            if r.status_code == 200:
+                payload = r.json()
+                data = payload.get("data") if isinstance(payload, dict) else None
+                if isinstance(data, list):
+                    for item in data:
+                        if isinstance(item, dict):
+                            model_id = item.get("id")
+                            if isinstance(model_id, str):
+                                models.append(model_id)
+                models.sort()
+            else:
+                fetch_error = f"HTTP {r.status_code}: {r.text[:200]}"
+        except Exception as exc:  # noqa: BLE001
+            fetch_error = f"{type(exc).__name__}: {exc}"
+
+        text = _build_acedata_info(models, fetch_error)
+        await send_long(message, text, parse_mode="HTML")
 
     @dp.message(Command("menu"))
     async def cmd_menu(message: TgMessage) -> None:
