@@ -48,7 +48,7 @@ from bot.handlers.personas import (
 )
 from bot.providers import PROVIDER_PRESETS, ImageData, Message, ProviderError
 from bot.providers.openai_compat import OpenAICompatProvider
-from bot.tools.url_fetch import fetch_pages
+from bot.tools.deep_search import run_deep_search
 from bot.tools.web_search import (
     WebSearchError,
     web_search,
@@ -68,8 +68,9 @@ USER_HELP_TEXT = """\
 <b>Основные команды</b>
 /chat &lt;вопрос&gt; — один вопрос модели (без истории)
 /img &lt;промпт&gt; — сгенерировать картинку
-/search &lt;вопрос&gt; — умный веб-поиск со ссылками [1][2] (по умолчанию 12 источников)
-/search -n 15 &lt;вопрос&gt; — взять N источников (1..20)
+/search &lt;вопрос&gt; — Perplexity-style: query expansion → 15 источников → ответ + follow-ups
+/search -n 18 &lt;вопрос&gt; — взять N итоговых источников (1..20)
+/search -quick &lt;запрос&gt; — быстрый режим (один запрос, ~8 источников)
 /search -raw &lt;запрос&gt; — сырой список ссылок без LLM-синтеза
 /yt &lt;url&gt; — пересказ YouTube-видео (Whisper → gpt-5)
 /yt -full &lt;url&gt; — полный транскрипт без пересказа
@@ -909,13 +910,14 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
         if not is_allowed(ctx.settings, message.from_user.id if message.from_user else None):
             return
         raw_query = (command.args or "").strip()
-        # Флаг -raw в начале запроса возвращает старое поведение: просто список ссылок,
-        # без LLM-синтеза. Полезно если у юзера нет openai-ключа или он просто хочет
-        # сырую выдачу.
+        # Флаги:
+        #   -raw       — только сырой список ссылок (без LLM).
+        #   -quick     — старый режим: один запрос, без query-expansion.
+        #   -n N       — лимит итоговых источников (1..20).
+        # Можно комбинировать в любом порядке: `/search -quick -n 8 запрос`.
         raw_mode = False
-        # Флаг -n N — сколько источников брать (1..20).
+        quick_mode = False
         num_override: int | None = None
-        # Парсим флаги в цикле чтоб их можно было ставить в любом порядке.
         while True:
             if raw_query.startswith("-raw "):
                 raw_mode = True
@@ -924,9 +926,13 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
             if raw_query == "-raw":
                 raw_query = ""
                 break
-            # Хвостовая часть после числа опциональна, чтобы `/search -n 15`
-            # без запроса корректно валился в usage-help, а не уходил искать
-            # литеральную строку «-n 15».
+            if raw_query.startswith("-quick "):
+                quick_mode = True
+                raw_query = raw_query[len("-quick "):].strip()
+                continue
+            if raw_query == "-quick":
+                raw_query = ""
+                break
             m = re.match(r"-n\s+(\d+)(?:\s+(.*))?$", raw_query, flags=re.DOTALL)
             if m:
                 try:
@@ -939,25 +945,29 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
 
         if not raw_query:
             await message.answer(
-                "Использование: <code>/search ваш вопрос</code> — perplexity-режим: "
-                "бот ищет в интернете, читает источники и пишет связный ответ со "
-                "ссылками <code>[1]</code>, <code>[2]</code>, … (по умолчанию 12 источников)\n\n"
+                "Использование: <code>/search ваш вопрос</code> — deep-режим в стиле "
+                "Perplexity: бот разбивает вопрос на несколько под-запросов, ищет по "
+                "ним параллельно, читает 15 источников и пишет связный ответ со "
+                "ссылками <code>[1]</code>, <code>[2]</code>, … + 3 уточняющих "
+                "вопроса в конце.\n\n"
                 "Флаги:\n"
-                "• <code>/search -n 15 запрос</code> — взять N источников (1..20)\n"
-                "• <code>/search -raw запрос</code> — старый режим: только список "
-                "ссылок без LLM-синтеза\n"
-                "• флаги можно комбинировать: <code>/search -raw -n 20 запрос</code>",
+                "• <code>/search -n 18 запрос</code> — взять N итоговых "
+                "источников (1..20)\n"
+                "• <code>/search -quick запрос</code> — быстрый режим (один "
+                "поисковый запрос, ~8 источников, без расширения)\n"
+                "• <code>/search -raw запрос</code> — только список ссылок "
+                "без LLM-синтеза\n"
+                "• флаги комбинируются: "
+                "<code>/search -quick -n 6 запрос</code>",
                 parse_mode="HTML",
             )
             return
         query = raw_query
         assert message.from_user
-        # Дефолты: 12 источников на perplexity-режим, 12 на raw.
-        synth_num = num_override if num_override is not None else 12
-        raw_num = num_override if num_override is not None else 12
 
-        # === Сырой режим — просто выдача ссылок (как раньше). ============
+        # === Сырой режим — просто выдача ссылок. ==========================
         if raw_mode:
+            raw_num = num_override if num_override is not None else 15
             thinking = await message.answer(f"🔎 Ищу ({raw_num} источников)…")
             try:
                 results, used = await web_search(
@@ -979,9 +989,7 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
             await send_long(message, header + format_search_results(results))
             return
 
-        # === Perplexity-режим: search → fetch → LLM synth с цитатами. =====
-        # 1. Найдём openai-ключ заранее, чтобы не качать страницы зря,
-        #    если ключа нет.
+        # === Perplexity-режим (deep / quick) — нужен openai-ключ. =========
         key_pair = await ctx.find_openai_key(message.from_user.id)
         if key_pair is None:
             await message.answer(
@@ -995,17 +1003,46 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
             return
         api_key, base_url = key_pair
 
-        progress = await message.answer(
-            f"🔎 Ищу источники ({synth_num})…"
-        )
+        # Дефолты по режимам.
+        if quick_mode:
+            max_sources = num_override if num_override is not None else 8
+        else:
+            max_sources = num_override if num_override is not None else 15
 
-        # 2. Поиск.
+        progress = await message.answer("🔎 Готовлю поиск…")
+
+        async def _on_progress(stage: str, info: dict) -> None:
+            if stage == "expand":
+                txt = "🧠 Расширяю запрос на под-запросы…"
+            elif stage == "search":
+                queries = info.get("queries") or []
+                txt = f"🔍 Ищу {len(queries)} под-запросов параллельно…"
+            elif stage == "fetch":
+                count = info.get("count") or 0
+                txt = f"📚 Читаю {count} источников…"
+            elif stage == "synth":
+                sources = info.get("sources") or 0
+                txt = f"🧠 Синтезирую ответ из {sources} источников…"
+            else:
+                return
+            with suppress(Exception):
+                await progress.edit_text(txt)
+
+        synth_model = ctx.settings.search_synth_model
         try:
-            results, used = await web_search(
+            output = await run_deep_search(
                 query,
+                api_key=api_key,
+                base_url=base_url,
+                synth_model=synth_model,
                 google_api_key=ctx.settings.google_search_api_key,
                 google_cse_id=ctx.settings.google_search_cse_id,
-                num_results=synth_num,
+                max_sources=max_sources,
+                # В quick-режиме увеличиваем `per_subquery` чтобы добрать
+                # столько же кандидатов из одного запроса.
+                per_subquery=(max_sources + 4) if quick_mode else 6,
+                expand_queries=not quick_mode,
+                on_progress=_on_progress,
             )
         except WebSearchError as exc:
             with suppress(Exception):
@@ -1014,103 +1051,6 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
                 f"⚠ Ошибка поиска: {html.escape(str(exc))}", parse_mode="HTML"
             )
             return
-
-        if not results:
-            with suppress(Exception):
-                await progress.delete()
-            await message.answer("Ничего не нашёл по этому запросу.")
-            return
-
-        # 3. Скачиваем содержимое топ-страниц параллельно.
-        with suppress(Exception):
-            await progress.edit_text(f"📚 Читаю {len(results)} источников ({used})…")
-
-        # Фильтруем результаты с пустым link до вызова fetch_pages, чтобы пары
-        # results↔pages совпадали по длине (zip(strict=True) иначе бросит).
-        results_with_links = [r for r in results if r.link]
-        urls = [r.link for r in results_with_links]
-        # Скачиваем в 8 потоков чтоб 12-15 источников открывались быстро.
-        # max_chars уменьшен до 2500 чтоб общий контекст помещался в LLM без
-        # перерасхода токенов.
-        pages = await fetch_pages(urls, timeout=10.0, max_chars=2500, max_concurrency=8)
-
-        # Оставляем только успешно прочитанные (с непустым текстом). Собираем
-        # до synth_num источников; LLM сам выберет релевантные.
-        usable: list[tuple[int, str, str, str]] = []  # (index, title, url, text)
-        for idx, (res, page) in enumerate(
-            zip(results_with_links, pages, strict=True), start=1
-        ):
-            if page.error or not page.text:
-                continue
-            title = page.title or res.title or page.url
-            usable.append((idx, title, page.url, page.text))
-            if len(usable) >= synth_num:
-                break
-
-        if not usable:
-            # Все источники не открылись — fallback на снippet'ы из выдачи.
-            with suppress(Exception):
-                await progress.edit_text("⚠ Не удалось скачать источники, использую сниппеты…")
-            for idx, res in enumerate(results[:synth_num], start=1):
-                if not res.snippet:
-                    continue
-                usable.append((idx, res.title or res.link, res.link, res.snippet))
-            if not usable:
-                with suppress(Exception):
-                    await progress.delete()
-                await message.answer("Источники недоступны, не могу ответить.")
-                return
-
-        # 4. Собираем контекст для LLM.
-        context_blocks: list[str] = []
-        cited_sources: list[tuple[int, str, str]] = []  # (renumbered, title, url)
-        for new_idx, (_orig_idx, title, url, text) in enumerate(usable, start=1):
-            context_blocks.append(
-                f"[{new_idx}] {title}\nURL: {url}\n{text}"
-            )
-            cited_sources.append((new_idx, title, url))
-
-        sources_context = "\n\n---\n\n".join(context_blocks)
-
-        system_prompt = (
-            "Ты ассистент в стиле Perplexity. Тебе дан вопрос пользователя и "
-            "несколько веб-источников, пронумерованных [1], [2], …\n\n"
-            "Правила:\n"
-            "1. Ответь на вопрос на том же языке, что и вопрос.\n"
-            "2. Используй только информацию из приведённых источников. Если "
-            "информации недостаточно — скажи это прямо.\n"
-            "3. После каждого утверждения ставь номер(а) источника в "
-            "квадратных скобках, например: «Python — динамически "
-            "типизированный язык [1][3].»\n"
-            "4. Будь краток и по делу. Markdown допустим (жирный, списки).\n"
-            "5. НЕ выдумывай источников и не добавляй ссылок, которых нет в "
-            "списке источников ниже.\n"
-            "6. НЕ добавляй сам список источников в конце ответа — его "
-            "пришлёт интерфейс отдельно."
-        )
-        user_prompt = (
-            f"Вопрос: {query}\n\nИсточники:\n\n{sources_context}\n\n"
-            "Дай краткий точный ответ с цитатами [N]."
-        )
-
-        # 5. Зовём OpenAI gpt-5.
-        with suppress(Exception):
-            await progress.edit_text("🧠 Синтезирую ответ…")
-
-        synth_provider = OpenAICompatProvider(
-            name="openai",
-            api_key=api_key,
-            base_url=base_url,
-        )
-        synth_model = ctx.settings.search_synth_model
-        try:
-            response = await synth_provider.complete(
-                messages=[
-                    Message(role="system", content=system_prompt),
-                    Message(role="user", content=user_prompt),
-                ],
-                model=synth_model,
-            )
         except ProviderError as exc:
             with suppress(Exception):
                 await progress.delete()
@@ -1121,7 +1061,7 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
             )
             return
         except Exception as exc:  # noqa: BLE001
-            logger.exception("/search synth failed")
+            logger.exception("/search deep failed")
             with suppress(Exception):
                 await progress.delete()
             await message.answer(f"⚠ Ошибка: {exc}")
@@ -1130,18 +1070,34 @@ def register_command_handlers(dp: Dispatcher, ctx: AppContext) -> None:
         with suppress(Exception):
             await progress.delete()
 
-        answer = (response.content or "").strip() or "(модель вернула пустой ответ)"
+        # 1) Сам ответ.
+        await send_llm_response(message, output.answer)
 
-        # 6. Шлём ответ + источники.
-        await send_llm_response(message, answer)
-
-        # Отдельным сообщением — пронумерованный список источников. Делаем
-        # plain-text чтобы не возиться с экранированием URL и заголовков.
-        src_lines = [f"📎 Источники (via {used}):"]
-        for n, title, url in cited_sources:
+        # 2) Источники + (опционально) под-запросы.
+        used_label = ", ".join(dict.fromkeys(output.providers_used)) or "search"
+        src_lines = [f"📎 Источники ({output.fetched_count}, via {used_label}):"]
+        for n, title, url in output.cited_sources:
             short_title = title if len(title) <= 90 else title[:87] + "…"
             src_lines.append(f"[{n}] {short_title}\n    {url}")
-        await message.answer("\n".join(src_lines), disable_web_page_preview=True)
+        if not quick_mode and len(output.expanded_queries) > 1:
+            src_lines.append("")
+            src_lines.append("🔎 Под-запросы:")
+            for q in output.expanded_queries:
+                src_lines.append(f"  • {q}")
+        await message.answer(
+            "\n".join(src_lines), disable_web_page_preview=True
+        )
+
+        # 3) Follow-ups.
+        if output.follow_ups:
+            fu_lines = ["💡 <b>Похожие вопросы</b> (скопируйте в /search):"]
+            for q in output.follow_ups[:3]:
+                fu_lines.append(f"• <code>/search {html.escape(q)}</code>")
+            await message.answer(
+                "\n".join(fu_lines),
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
 
     @dp.message(Command("img"))
     async def cmd_img(message: TgMessage, command: CommandObject) -> None:
