@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -89,13 +90,26 @@ class Agent:
         new_messages: list[Message] = [Message(role="user", content=user_message)]
         tool_defs = self.tools.definitions() if self.tools else None
 
+        # Gemini's OpenAI-compat шлюз криво обрабатывает function_response в
+        # многоходовых tool-вызовах (баг "Name cannot be empty" в
+        # GenerateContentRequest). Чтобы агент работал и на Gemini, перед
+        # отправкой превращаем tool-сообщения и assistant.tool_calls в
+        # обычный текст; модель всё равно видит что и зачем вызвала и какой
+        # был результат, просто без структурного JSON-протокола.
+        flatten_tools_in_history = _provider_needs_flat_history(self.provider)
+
         for iteration in range(1, self.max_iterations + 1):
             logger.debug("agent iteration %d / %d", iteration, self.max_iterations)
             if on_event:
                 await on_event(AgentEvent(kind="thinking", text=f"Итерация {iteration}…"))
 
+            payload_messages = (
+                _flatten_tool_messages(messages)
+                if flatten_tools_in_history
+                else messages
+            )
             response = await self.provider.complete(
-                messages=messages,
+                messages=payload_messages,
                 model=self.model,
                 tools=tool_defs,
                 temperature=self.temperature,
@@ -186,3 +200,58 @@ def _truncate(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[: limit - 3] + "..."
+
+
+# Провайдеры, у которых OpenAI-compat шлюз криво обрабатывает структурный
+# tool-протокол (function_response) и валится на «name пустое». Для них в
+# истории мы превращаем tool_call/tool_response в обычный текст внутри
+# user/assistant сообщений.
+_FLAT_TOOL_HISTORY_PROVIDERS: frozenset[str] = frozenset({"google"})
+
+
+def _provider_needs_flat_history(provider: LLMProvider) -> bool:
+    name = getattr(provider, "name", "") or ""
+    return name in _FLAT_TOOL_HISTORY_PROVIDERS
+
+
+def _flatten_tool_messages(messages: list[Message]) -> list[Message]:
+    """Превращает tool-roundtrip в обычный текстовый диалог.
+
+    - assistant с tool_calls → текст "I'll call X with {args}" + очищенные tool_calls
+    - tool result → user-сообщение "[Tool X returned]: {content}"
+
+    Системные/обычные user/assistant остаются как есть (плюс копируются images).
+    """
+    out: list[Message] = []
+    for m in messages:
+        if m.role == "assistant" and m.tool_calls:
+            parts: list[str] = []
+            if m.content:
+                parts.append(m.content.strip())
+            for tc in m.tool_calls:
+                try:
+                    args_json = json.dumps(tc.arguments, ensure_ascii=False)
+                except (TypeError, ValueError):
+                    args_json = str(tc.arguments)
+                parts.append(f"[Calling tool `{tc.name}` with arguments: {args_json}]")
+            out.append(
+                Message(
+                    role="assistant",
+                    content="\n".join(p for p in parts if p),
+                    images=list(m.images),
+                    tool_calls=[],
+                )
+            )
+            continue
+        if m.role == "tool":
+            tool_name = m.name or "tool"
+            content = m.content or ""
+            out.append(
+                Message(
+                    role="user",
+                    content=f"[Tool `{tool_name}` returned]:\n{content}",
+                )
+            )
+            continue
+        out.append(m)
+    return out
